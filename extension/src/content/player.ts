@@ -3,10 +3,11 @@
 
 import browser from '../shared/browser';
 import type { PlayerAction } from '../shared/protocol';
-import type { PlayerEventMsg, BufferingMsg, BeatMsg, AdMsg, PlayerSnapshot } from '../shared/messages';
+import type { PlayerEventMsg, BufferingMsg, BeatMsg, AdMsg, PlayerSnapshot, VideoPresenceMsg } from '../shared/messages';
 import { findAdapter, queryVideosDeep } from './adapters';
 
 const AD_POLL_MS = 500; // как часто проверяем состояние рекламы
+const PRESENCE_REASSERT_MS = 4000; // ре-репорт «видео есть» — восстановление после выгрузки SW
 
 const SEEK_EPSILON = 0.5;   // сек: порог, ниже которого не трогаем currentTime
 const APPLY_RELEASE_MS = 400; // через сколько снимаем флаг isApplyingRemote
@@ -27,6 +28,8 @@ export class PlayerController {
   private isAdActive = false;         // у нас сейчас идёт реклама (Фаза 3)
   private pausedByPeerAd = false;     // нас поставила на паузу реклама партнёра (Фаза 3)
   private lastLocalActionTs = 0;      // когда мы сами play/pause/seek — защита от отката дрейфом
+  private hasVideo = false;           // есть ли в этом фрейме <video> (для гейтинга островка)
+  private presenceReported = false;   // отправляли ли хотя бы раз статус присутствия
 
   start(): void {
     this.scan();
@@ -38,6 +41,22 @@ export class PlayerController {
     window.setInterval(() => this.beat(), HEARTBEAT_MS);
     // Отслеживание рекламы (sync-aware): при своей рекламе держим партнёра на паузе.
     window.setInterval(() => this.checkAd(), AD_POLL_MS);
+    // Ре-репорт присутствия: восстанавливает карту в background после выгрузки SW.
+    window.setInterval(() => { if (this.hasVideo) this.sendPresence(true); }, PRESENCE_REASSERT_MS);
+  }
+
+  /** Сообщить background, есть ли в этом фрейме видео. Пуш при смене состояния или
+   *  впервые; ре-репорт `true` идёт периодически (идемпотентно для агрегатора). */
+  private updatePresence(present: boolean): void {
+    if (this.presenceReported && present === this.hasVideo) return;
+    this.hasVideo = present;
+    this.presenceReported = true;
+    this.sendPresence(present);
+  }
+
+  private sendPresence(present: boolean): void {
+    const msg: VideoPresenceMsg = { kind: 'video-presence', present };
+    browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
   }
 
   /** Периодическое биение позиции в background (только при воспроизведении, не во время рекламы). */
@@ -64,6 +83,9 @@ export class PlayerController {
     if (candidate && candidate !== this.video) {
       this.attach(candidate);
     }
+    // Присутствие видео для гейтинга островка. Подмена <video> всегда даёт непустого
+    // кандидата → не мигаем; `false` уходит только когда видео реально нет во фрейме.
+    this.updatePresence(candidate != null);
   }
 
   private pickActiveVideo(): HTMLVideoElement | null {

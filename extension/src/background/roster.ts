@@ -10,7 +10,6 @@ import type {
   StatusSnapshot,
   EventMsg,
   ControlRequestMsg,
-  UpdateAvailableMsg,
   RuntimeMessage,
 } from '../shared/messages';
 import {
@@ -218,11 +217,5 @@ export function notifyEvent(text: string): void {
 export function pushControlRequest(from: number): void {
   const name = session.roster.get(from)?.name || 'Партнёр';
   const msg: ControlRequestMsg = { kind: 'control-request', from, name };
-  sendToOverlays(msg);
-}
-
-/** Нотификатор: доступна новая сборка — сообщить оверлею (авто-скачивания нет). */
-export function pushUpdateAvailable(version: string): void {
-  const msg: UpdateAvailableMsg = { kind: 'update-available', version };
   sendToOverlays(msg);
 }

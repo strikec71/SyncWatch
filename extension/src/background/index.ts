@@ -15,13 +15,12 @@ import {
   sendWire,
   amHost,
   KEEPALIVE_ALARM,
-  UPDATE_ALARM,
-  UPDATE_PERIOD_MIN,
+  RECONNECT_ALARM,
 } from './state';
-import { connect, disconnect, cancelReconnect, checkWatchdog } from './connection';
+import { connect, disconnect, cancelReconnect, checkWatchdog, reconnectTick } from './connection';
 import { onPlayerEvent, onBuffering, onBeat, onAd } from './sync';
 import { notifyEvent, notifyPopup, statusSnapshot } from './roster';
-import { checkForUpdate } from './notifier';
+import { onVideoPresence, queryVideoAvailable, forgetTab } from './presence';
 
 browser.runtime.onMessage.addListener(
   (msg: RuntimeMessage, sender, sendResponse) => {
@@ -68,9 +67,22 @@ browser.runtime.onMessage.addListener(
         sendWire({ type: 'REQUEST_CONTROL' });
         sendResponse({ ok: true });
         return;
+      case 'video-presence':
+        // Любой фрейм сообщает, есть ли в нём <video>. Хаб агрегирует по вкладке и
+        // пушит доступность в островок (frame 0) — чтобы он не всплывал на страницах без видео.
+        if (sender.tab?.id != null) onVideoPresence(sender.tab.id, sender.frameId ?? 0, msg.present);
+        return;
+      case 'query-video':
+        // Верхний фрейм при загрузке спрашивает: есть ли уже видео в этой вкладке
+        // (дочерние фреймы могли отрепортить раньше, чем островок подписался на push).
+        sendResponse({ available: sender.tab?.id != null && queryVideoAvailable(sender.tab.id) });
+        return;
     }
   },
 );
+
+// Вкладка закрыта — забываем её карту присутствия видео (иначе утечёт).
+browser.tabs.onRemoved.addListener((tabId) => forgetTab(tabId));
 
 /** Переключить соло/синхрон. Detach: перестаём применять/слать (гейтится в sync.ts),
  *  но остаёмся в комнате. Un-detach: шлём MODE, снапшот прилетит направленным STATE. */
@@ -94,8 +106,8 @@ browser.alarms.onAlarm.addListener((alarm) => {
     checkWatchdog(); // тем же тиком проверяем «молчащий» сокет
     return;
   }
-  if (alarm.name === UPDATE_ALARM) {
-    void checkForUpdate(); // нотификатор новой сборки (Фаза B), тихо падает при ошибке
+  if (alarm.name === RECONNECT_ALARM) {
+    reconnectTick(); // персистентный фолбэк: дожать реконнект, если setTimeout был потерян при выгрузке SW
     return;
   }
 });
@@ -104,12 +116,6 @@ browser.alarms.onAlarm.addListener((alarm) => {
 async function autoConnectIfEnabled(): Promise<void> {
   const s = await loadSettings();
   if (s.autoConnect && s.room && s.serverUrl) void connect();
-}
-
-// Нотификатор обновлений (Фаза B): периодический alarm + разовая проверка при старте.
-function scheduleUpdateChecks(): void {
-  browser.alarms.create(UPDATE_ALARM, { periodInMinutes: UPDATE_PERIOD_MIN });
-  void checkForUpdate();
 }
 
 // Тумблер на иконке расширения: показывает/скрывает островок (overlayEnabled);
@@ -131,10 +137,10 @@ async function syncActionBadge(): Promise<void> {
 }
 
 browser.runtime.onInstalled.addListener(() => {
-  void autoConnectIfEnabled(); void syncActionBadge(); scheduleUpdateChecks();
+  void autoConnectIfEnabled(); void syncActionBadge();
 });
 browser.runtime.onStartup.addListener(() => {
-  void autoConnectIfEnabled(); void syncActionBadge(); scheduleUpdateChecks();
+  void autoConnectIfEnabled(); void syncActionBadge();
 });
 browser.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.settings) void syncActionBadge();

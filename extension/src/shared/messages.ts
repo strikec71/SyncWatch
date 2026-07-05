@@ -107,8 +107,16 @@ export interface RequestControlMsg { kind: 'request-control'; }
  *  `from` = connId просителя (совпадает со строкой roster), `name` — его имя для тоста/подсветки. */
 export interface ControlRequestMsg { kind: 'control-request'; from: number; name: string; }
 
-/** background → overlay (frame 0): доступна новая сборка (нотификатор). Фаза B; авто-скачивания нет. */
-export interface UpdateAvailableMsg { kind: 'update-available'; version: string; }
+/** content-скрипт (любой фрейм) → background: есть ли в этом фрейме <video>.
+ *  Хаб агрегирует по вкладке, чтобы островок всплывал только на страницах с видео. */
+export interface VideoPresenceMsg { kind: 'video-presence'; present: boolean; }
+
+/** background → content-скрипт (frame 0): в этой вкладке есть/нет видео (в любом фрейме). */
+export interface VideoAvailabilityMsg { kind: 'video-availability'; available: boolean; }
+
+/** content-скрипт (frame 0) → background: запрос текущей доступности видео при загрузке.
+ *  Ответ: `{ available: boolean }`. Закрывает гонку «дочерний фрейм отрепортил раньше подписки». */
+export interface QueryVideoMsg { kind: 'query-video'; }
 
 /** background → оверлей: снимок состояния (roster-based, Фаза A).
  *  `peerPresent`/`peerName` сохранены для обратной совместимости с оверлеем
@@ -148,7 +156,9 @@ export type RuntimeMessage =
   | SetControlMsg
   | RequestControlMsg
   | ControlRequestMsg
-  | UpdateAvailableMsg
+  | VideoPresenceMsg
+  | VideoAvailabilityMsg
+  | QueryVideoMsg
   | StatusMsg;
 
 /** Снимок состояния хаба для оверлея/теста. Roster-based (Фаза A + `self` Фаза B). */

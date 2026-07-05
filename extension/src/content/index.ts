@@ -19,24 +19,43 @@ handleInvite();
 const banner = window.top === window ? new StatusBanner() : null;
 
 // Островок (единственный UI): одна панель на вкладку — только в верхнем фрейме.
-// Показ/скрытие управляется настройкой overlayEnabled (тумблер — иконка расширения).
+// Показ = настройка overlayEnabled (тумблер на иконке) И наличие видео в этой вкладке
+// (хотя бы в одном фрейме) — чтобы островок не всплывал на страницах без плеера.
 if (window.top === window) {
   let overlay: Overlay | null = null;
   let overlayEnabled = false;
+  let videoAvailable = false;
+  let mounted = false;
 
-  const apply = (enabled: boolean) => {
-    if (enabled === overlayEnabled) return;
-    overlayEnabled = enabled;
-    if (enabled) { overlay = new Overlay(); void overlay.mount(); }
+  const reconcile = () => {
+    const show = overlayEnabled && videoAvailable;
+    if (show === mounted) return;
+    mounted = show;
+    if (show) { overlay = new Overlay(); void overlay.mount(); }
     else { overlay?.unmount(); overlay = null; }
   };
 
-  void loadSettings().then((s) => apply(s.overlayEnabled));
+  void loadSettings().then((s) => { overlayEnabled = s.overlayEnabled; reconcile(); });
+
+  // Текущая доступность видео в этой вкладке (дочерний фрейм мог отрепортить раньше,
+  // чем мы подписались на push) — спрашиваем background напрямую.
+  void browser.runtime.sendMessage({ kind: 'query-video' })
+    .then((r: unknown) => {
+      videoAvailable = (r as { available?: boolean } | undefined)?.available ?? false;
+      reconcile();
+    })
+    .catch(() => { /* SW перезапускается — придёт push */ });
 
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes.settings) return;
     const next = (changes.settings.newValue as { overlayEnabled?: boolean } | undefined);
-    apply(next?.overlayEnabled ?? true);
+    overlayEnabled = next?.overlayEnabled ?? true;
+    reconcile();
+  });
+
+  // Живой push доступности видео от background (агрегатор presence.ts).
+  browser.runtime.onMessage.addListener((msg: RuntimeMessage) => {
+    if (msg?.kind === 'video-availability') { videoAvailable = msg.available; reconcile(); }
   });
 }
 

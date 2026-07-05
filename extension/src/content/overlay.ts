@@ -83,11 +83,6 @@ export class Overlay {
       window.setTimeout(() => void this.refresh(), 200);
     });
 
-    // Нотификатор обновлений: в dev-mode авто-скачивания нет — подсказываем перезагрузить.
-    this.$('upd').addEventListener('click', () => {
-      this.hint('Обновите расширение: chrome://extensions → «Обновить»');
-    });
-
     for (const id of ['room', 'serverUrl', 'drift', 'dev', 'auto']) {
       this.$(id).addEventListener('change', () => void this.persist());
     }
@@ -120,7 +115,6 @@ export class Overlay {
       case 'event': this.toast(msg.text, false); break;
       case 'status': this.render(msg); break; // мгновенное обновление roster без ожидания poll
       case 'control-request': this.onControlRequest(msg.from, msg.name); break;
-      case 'update-available': this.onUpdateAvailable(msg.version); break;
     }
   }
 
@@ -276,13 +270,6 @@ export class Overlay {
     this.requesting.add(from);
     this.toast(`${name || 'Гость'} просит управление`, true);
     void this.refresh();
-  }
-
-  /** Доступна новая сборка: ненавязчивая плашка с версией и кнопкой «Обновить». */
-  private onUpdateAvailable(version: string): void {
-    if (!this.shadow) return;
-    this.$('uver').textContent = `v${version}`;
-    (this.$('update') as HTMLElement).style.display = '';
   }
 
   /** Единый показ эфемерного сообщения: события (нейтральные) и подсказки (accent). */

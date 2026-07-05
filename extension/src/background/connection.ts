@@ -19,6 +19,7 @@ import {
   sendWire,
   amHost,
   KEEPALIVE_ALARM,
+  RECONNECT_ALARM,
   BACKOFF_BASE,
   BACKOFF_CAP,
   BACKOFF_JITTER,
@@ -78,9 +79,10 @@ export async function connect(): Promise<{ ok: boolean; error?: string }> {
       session.connected = true;
       session.lastRecvAt = Date.now();
       reconnectAttempt = 0; // успешное соединение сбрасывает backoff
+      void browser.alarms.clear(RECONNECT_ALARM); // на связи — персистентный фолбэк больше не нужен
       sendWire({ type: 'JOIN', room: settings.room, name: session.deviceName });
       if (session.detached) sendWire({ type: 'MODE', detached: true }); // соло переживает реконнект
-      browser.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // ~24с
+      browser.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // keepalive; браузер клампит период к своему минимуму (Chrome ~30с, FF ~60с)
       notifyEvent(`Подключено к комнате «${settings.room}»`);
       notifyPopup();
     });
@@ -98,6 +100,7 @@ export async function connect(): Promise<{ ok: boolean; error?: string }> {
 export function disconnect(): void {
   session.intentionalClose = true;
   cancelReconnect();
+  void browser.alarms.clear(RECONNECT_ALARM); // намеренный disconnect гасит и персистентный фолбэк
   teardownSocket();
 }
 
@@ -124,6 +127,11 @@ function onSocketDown(): void {
 
 function scheduleReconnect(): void {
   if (session.intentionalClose || !session.autoConnect || !session.room) return;
+  // Персистентный фолбэк: alarm переживает выгрузку service worker и разбудит нас, даже
+  // если быстрый setTimeout ниже будет потерян (MV3 НЕ продлевает жизнь SW ради pending
+  // setTimeout). Идемпотентно; период браузер клампит к минимуму (~30с). Снимается на
+  // успешном open, при disconnect и когда reconnectDecision → 'clear'.
+  browser.alarms.create(RECONNECT_ALARM, { periodInMinutes: 0.5 });
   if (reconnectTimer != null) return;
   const delay = computeBackoff(reconnectAttempt);
   reconnectAttempt++;
@@ -131,6 +139,39 @@ function scheduleReconnect(): void {
     reconnectTimer = null;
     void connect();
   }, delay);
+}
+
+/** Решение alarm-фолбэка (чистое, тестируемое). `clear` — реконнект больше не нужен,
+ *  снять alarm; `wait` — быстрый setTimeout ещё запланирован (SW жив), не мешаем;
+ *  `connect` — форсируем попытку (типично после выгрузки SW: setTimeout был потерян). */
+export type ReconnectDecision = 'clear' | 'wait' | 'connect';
+export function reconnectDecision(p: {
+  intentionalClose: boolean;
+  autoConnect: boolean;
+  room: string;
+  connected: boolean;
+  timerPending: boolean;
+}): ReconnectDecision {
+  if (p.intentionalClose || !p.autoConnect || !p.room || p.connected) return 'clear';
+  if (p.timerPending) return 'wait';
+  return 'connect';
+}
+
+/** Тик персистентного фолбэка (вызывается из onAlarm на RECONNECT_ALARM). */
+export function reconnectTick(): void {
+  const decision = reconnectDecision({
+    intentionalClose: session.intentionalClose,
+    autoConnect: session.autoConnect,
+    room: session.room,
+    connected: session.connected,
+    timerPending: reconnectTimer != null,
+  });
+  if (decision === 'clear') {
+    void browser.alarms.clear(RECONNECT_ALARM);
+    return;
+  }
+  if (decision === 'wait') return; // SW жив, setTimeout дожмёт сам
+  void connect(); // connect() сам снимает полу-открытый сокет (teardownSocket); zombie-gate прикрывает гонку
 }
 
 /** Отменить запланированный реконнект и сбросить счётчик попыток (явное действие пользователя). */

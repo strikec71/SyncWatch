@@ -17,7 +17,7 @@ import {
   emptyBlock,
   type PeerBlock,
 } from '../src/background/state';
-import { computeBackoff } from '../src/background/connection';
+import { computeBackoff, reconnectDecision } from '../src/background/connection';
 import { isEcho, canEmit } from '../src/background/sync';
 import { diffRoster, aggregateBanner } from '../src/background/roster';
 import type { RosterPeer } from '../src/shared/protocol';
@@ -82,6 +82,44 @@ describe('computeBackoff', () => {
         expect(d).toBeLessThan(exp + BACKOFF_JITTER);
       }
     }
+  });
+});
+
+// ── reconnectDecision (персистентный alarm-фолбэк реконнекта) ───────────────────
+
+describe('reconnectDecision', () => {
+  const base = {
+    intentionalClose: false,
+    autoConnect: true,
+    room: 'abc',
+    connected: false,
+    timerPending: false,
+  };
+
+  it('connect: должны быть на связи, но не на связи и быстрый setTimeout не ждёт', () => {
+    expect(reconnectDecision(base)).toBe('connect');
+  });
+
+  it('wait: быстрый setTimeout ещё запланирован (SW жив) — не мешаем', () => {
+    expect(reconnectDecision({ ...base, timerPending: true })).toBe('wait');
+  });
+
+  it('clear: уже на связи', () => {
+    expect(reconnectDecision({ ...base, connected: true })).toBe('clear');
+  });
+
+  it('clear: намеренный disconnect', () => {
+    expect(reconnectDecision({ ...base, intentionalClose: true })).toBe('clear');
+  });
+
+  it('clear: авто-коннект выключен или нет комнаты', () => {
+    expect(reconnectDecision({ ...base, autoConnect: false })).toBe('clear');
+    expect(reconnectDecision({ ...base, room: '' })).toBe('clear');
+  });
+
+  it('clear доминирует над timerPending (интент важнее ожидания)', () => {
+    expect(reconnectDecision({ ...base, connected: true, timerPending: true })).toBe('clear');
+    expect(reconnectDecision({ ...base, intentionalClose: true, timerPending: true })).toBe('clear');
   });
 });
 

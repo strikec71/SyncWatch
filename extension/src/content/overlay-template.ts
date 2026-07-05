@@ -47,13 +47,6 @@ export const TEMPLATE = `
   @keyframes slide { to { background-position: -200% 0; } }
   @keyframes sweep { 0% { background-position: -55% 0; } 100% { background-position: 155% 0; } }
 
-  /* Плашка обновления (нотификатор) — над тостами, ненавязчивая */
-  .update { display: none; align-items: center; gap: 8px; margin: 8px 10px 0; padding: 7px 9px;
-    font-size: 11px; border-radius: 8px; border: 1px solid rgba(124,245,255,.35);
-    background: rgba(124,245,255,.08); }
-  .update .utxt { flex: 1; color: var(--ink); }
-  .update .uver { font-family: var(--mono); color: #7cf5ff; }
-
   /* Тосты (события + подсказки) — вне .body, видны в любом состоянии */
   .toasts { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 0; }
   .toasts:empty { display: none; }
@@ -172,11 +165,6 @@ export const TEMPLATE = `
     <button class="hbtn" id="m" title="Свернуть">▾</button>
   </div>
   <div class="syncline" id="sync" data-state="off"></div>
-
-  <div class="update" id="update">
-    <span class="utxt">Новая версия <span class="uver" id="uver"></span></span>
-    <button class="btn micro" id="upd" type="button">Обновить</button>
-  </div>
 
   <div class="toasts" id="toasts"></div>
 

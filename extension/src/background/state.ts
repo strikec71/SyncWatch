@@ -8,8 +8,7 @@ import type { RosterPeer, ClientMessage } from '../shared/protocol';
 import type { BannerMsg } from '../shared/messages';
 
 export const KEEPALIVE_ALARM = 'syncwatch-keepalive';
-export const UPDATE_ALARM = 'syncwatch-update'; // периодическая проверка новой сборки (Фаза B)
-export const UPDATE_PERIOD_MIN = 360; // ~6ч между проверками /version
+export const RECONNECT_ALARM = 'syncwatch-reconnect'; // персистентный фолбэк реконнекта (переживает выгрузку SW)
 export const ECHO_EPSILON = 0.5; // сек: сколько считаем «тем же» состоянием при сверке эха
 
 // Hardened reconnect (Фаза A): экспоненциальный backoff с джиттером, без предела попыток.
