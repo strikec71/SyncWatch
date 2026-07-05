@@ -16,9 +16,12 @@
 - **Firefox AMO**: бесплатный аккаунт на <https://addons.mozilla.org>.
 - **GitHub**: репозиторий `OWNER/REPO` с включёнными Releases.
 
-Адрес сервера уже прошит в `extension/src/shared/settings.ts`
-(`wss://syncwatch-signal.strikec71.workers.dev`) и в `update_url`
-(`manifest.firefox.json` → `.../updates.json`).
+Адрес релея синхрона в `extension/src/shared/settings.ts`
+(`DEFAULT_SETTINGS.serverUrl`) **намеренно пуст** — общего сервера по умолчанию нет,
+каждая группа поднимает свой (см. `docs/SELF_HOST.md`) и вписывает адрес в островок
+или получает его из инвайт-ссылки `/join`. Прошитым остаётся только `update_url`
+автообновления Firefox (`manifest.firefox.json` → `.../updates.json`) — это релиз-инфра,
+а не релей синхрона.
 
 ---
 
