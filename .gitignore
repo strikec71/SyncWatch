@@ -1,0 +1,10 @@
+node_modules/
+extension/dist/
+extension/dist.zip
+.wrangler/
+*.log
+.DS_Store
+
+# Локальные настройки Claude Code и кэш ruflo — не для публичного репо
+.claude/settings.local.json
+.claude-flow/
