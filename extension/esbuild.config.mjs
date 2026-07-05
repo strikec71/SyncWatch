@@ -18,6 +18,7 @@ async function buildTarget(target) {
   await rm(outdir, { recursive: true, force: true });
   await mkdir(outdir, { recursive: true });
   await cp(manifestSrc, `${outdir}/manifest.json`);
+  await cp('icons', `${outdir}/icons`, { recursive: true });
 
   const ctx = await esbuild.context({
     entryPoints: {
