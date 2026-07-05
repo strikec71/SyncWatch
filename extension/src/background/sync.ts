@@ -56,6 +56,14 @@ export function canEmit(
   return opts.amController;
 }
 
+/** Отметить реальную активность просмотра — сбрасывает таймер авто-дисконнекта по простою.
+ *  Зовётся из всех сигналов «за экраном кто-то есть»: локальный beat (играем), событие
+ *  плеера (жмут кнопки), входящий STATE/BEAT (партнёр играет/действует). PING/roster сюда
+ *  НЕ входят — иначе keepalive не давал бы простою наступить никогда. */
+function noteActivity(s: Session): void {
+  s.lastActivityAt = Date.now();
+}
+
 // ── Активный фрейм ────────────────────────────────────────────────────────────
 
 /** Отправить сообщение content-скрипту активного (плеерного) фрейма вкладки сессии. */
@@ -74,6 +82,7 @@ function markActiveFrame(s: Session, frameId: number): void {
 
 export function onPlayerEvent(s: Session, msg: PlayerEventMsg, frameId: number): void {
   markActiveFrame(s, frameId); // фрейм с реальным действием считаем активным
+  noteActivity(s); // локальное действие (в т.ч. пауза) сбрасывает таймер простоя
 
   if (isEcho(s.lastSync, msg.action, msg.currentTime, ECHO_EPSILON)) {
     s.lastSync = null;
@@ -117,6 +126,7 @@ export function onBuffering(s: Session, msg: BufferingMsg, frameId: number): voi
 
 export function onBeat(s: Session, msg: BeatMsg, frameId: number): void {
   markActiveFrame(s, frameId);
+  noteActivity(s); // beat приходит ТОЛЬКО при воспроизведении → мы активно смотрим
   // BEAT шлёт ТОЛЬКО host (опорный клиент дрейфа). Не host / detached — молчим.
   if (s.detached || !amHost(s)) return;
   const wire: BeatMessage = {
@@ -139,6 +149,7 @@ export function onAd(s: Session, msg: AdMsg, frameId: number): void {
 // ── Удалённые сообщения → плеер ──────────────────────────────────────────────
 
 export function applyRemoteState(s: Session, state: StateMessage): void {
+  noteActivity(s); // партнёр действует → комната активна, простой сбрасываем даже в соло
   if (s.detached) return; // соло: смотрим независимо, чужое не применяем
   if (state.to != null && state.to !== s.myConnId) return; // чужой направленный снапшот
 
@@ -170,6 +181,7 @@ export function onRemoteAd(s: Session, msg: AdMessage): void {
 }
 
 export function onRemoteBeat(s: Session, msg: BeatMessage): void {
+  noteActivity(s); // входящий BEAT = партнёр играет → комната активна
   // Дрейф правит только НЕ host и НЕ detached. Host — источник, себя не корректирует.
   if (s.detached || amHost(s)) return;
   sendToActiveFrame(s, {

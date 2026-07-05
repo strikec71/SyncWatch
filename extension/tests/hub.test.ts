@@ -12,8 +12,10 @@ import {
   BACKOFF_JITTER,
   ECHO_EPSILON,
   WATCHDOG_SILENCE_MS,
+  IDLE_DISCONNECT_MS,
   computeAmHost,
   computeAmController,
+  isIdleExpired,
   emptyBlock,
   type PeerBlock,
 } from '../src/background/state';
@@ -43,6 +45,38 @@ describe('hub constants', () => {
     expect(BACKOFF_CAP).toBe(30000);
     expect(BACKOFF_JITTER).toBe(1000);
     expect(WATCHDOG_SILENCE_MS).toBe(45000);
+    expect(IDLE_DISCONNECT_MS).toBe(90 * 60 * 1000);
+  });
+});
+
+// ── isIdleExpired (авто-дисконнект по простою) ─────────────────────────────────
+
+describe('isIdleExpired', () => {
+  const base = {
+    connected: true,
+    intentionalClose: false,
+    lastActivityAt: 1_000_000,
+    now: 1_000_000,
+    idleMs: IDLE_DISCONNECT_MS,
+  };
+
+  it('не срабатывает, пока простой меньше порога', () => {
+    expect(isIdleExpired({ ...base, now: base.lastActivityAt + IDLE_DISCONNECT_MS - 1 })).toBe(false);
+  });
+
+  it('срабатывает ровно на пороге и позже', () => {
+    expect(isIdleExpired({ ...base, now: base.lastActivityAt + IDLE_DISCONNECT_MS })).toBe(true);
+    expect(isIdleExpired({ ...base, now: base.lastActivityAt + IDLE_DISCONNECT_MS * 2 })).toBe(true);
+  });
+
+  it('не трогает отключённый или закрытый вручную сокет', () => {
+    const expired = { ...base, now: base.lastActivityAt + IDLE_DISCONNECT_MS };
+    expect(isIdleExpired({ ...expired, connected: false })).toBe(false);
+    expect(isIdleExpired({ ...expired, intentionalClose: true })).toBe(false);
+  });
+
+  it('не срабатывает без единой активности (lastActivityAt=0)', () => {
+    expect(isIdleExpired({ ...base, lastActivityAt: 0, now: 10 * IDLE_DISCONNECT_MS })).toBe(false);
   });
 });
 

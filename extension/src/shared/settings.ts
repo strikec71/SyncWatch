@@ -18,8 +18,11 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  // Прошитый адрес задеплоенного релея — поле «Сервер» в UI трогать не нужно.
-  serverUrl: 'wss://syncwatch-signal.strikec71.workers.dev',
+  // Пусто НАМЕРЕННО: общего публичного релея по умолчанию нет. Каждый поднимает свой
+  // (см. docs/PUBLISHING.md / инструкцию self-host) и вписывает адрес в поле «Сервер»,
+  // либо получает его автоматически из инвайт-ссылки /join (#r=код&s=сервер). Без адреса
+  // connect() вернёт «Не задан адрес сервера» — это ожидаемо до первой настройки/приглашения.
+  serverUrl: '',
   room: '',
   driftThreshold: 1.0,
   autoConnect: true,

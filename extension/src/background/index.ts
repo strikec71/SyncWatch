@@ -28,7 +28,7 @@ import {
   KEEPALIVE_ALARM,
   RECONNECT_ALARM,
 } from './state';
-import { connect, disconnect, cancelReconnect, checkWatchdog, reconnectTick } from './connection';
+import { connect, disconnect, cancelReconnect, checkWatchdog, checkIdle, reconnectTick } from './connection';
 import { onPlayerEvent, onBuffering, onBeat, onAd } from './sync';
 import { notifyEvent, notifyPopup, statusSnapshot } from './roster';
 import { onVideoPresence, queryVideoAvailable, forgetTab } from './presence';
@@ -137,6 +137,7 @@ browser.alarms.onAlarm.addListener((alarm) => {
     for (const s of allSessions()) {
       if (s.connected) { sendWire(s, { type: 'PING', ts: Date.now() }); anyConnected = true; }
       checkWatchdog(s);
+      checkIdle(s); // тем же тиком (~30с) — авто-дисконнект простаивающей паузы
     }
     if (!anyConnected) void browser.alarms.clear(KEEPALIVE_ALARM); // некого пинговать
     return;
