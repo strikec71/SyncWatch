@@ -85,8 +85,9 @@ export interface BannerMsg {
   name: string;  // имя партнёра
 }
 
-/** popup → background. */
-export interface ConnectMsg { kind: 'connect'; }
+/** островок/инвайт → background: подключить ЭТУ вкладку к комнате (room — per-tab,
+ *  едет в сообщении; serverUrl опционален, иначе берётся глобальная настройка). */
+export interface ConnectMsg { kind: 'connect'; room: string; serverUrl?: string; }
 export interface DisconnectMsg { kind: 'disconnect'; }
 export interface GetStatusMsg { kind: 'get-status'; }
 

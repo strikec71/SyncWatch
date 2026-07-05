@@ -24,12 +24,16 @@ export function handleInvite(): void {
 }
 
 async function apply(room: string, serverUrl?: string): Promise<void> {
+  // Сохраняем best-effort (serverUrl глобален; room — как «последний код» для пред-заполнения
+  // островка). Но подключение адресуется per-tab: комнату шлём прямо в connect.
   await saveSettings(serverUrl ? { room, serverUrl } : { room });
   // Убираем хэш, чтобы приглашение не сработало повторно при навигации/перезагрузке.
   try {
     history.replaceState(null, '', location.pathname + location.search);
   } catch { /* некоторые песочницы запрещают replaceState */ }
-  await browser.runtime.sendMessage({ kind: 'connect' }).catch(() => { /* SW перезапускается */ });
+  await browser.runtime
+    .sendMessage({ kind: 'connect', room, serverUrl })
+    .catch(() => { /* SW перезапускается */ });
   showToast(`SyncWatch: подключаюсь к комнате «${room}»…`);
 }
 

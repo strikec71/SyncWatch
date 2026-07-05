@@ -1,11 +1,11 @@
-// Ядро состояния хаба: singleton `session`, константы и чистые селекторы.
-// Roster-based (Фаза A): заменил бинарные поля «я↔один партнёр» на карту roster
-// (все участники, себя включая) и per-peer блокирующие состояния для баннера.
-// Ни от кого не зависит (только browser + типы) — все остальные модули импортируют отсюда.
+// Ядро состояния хаба: РЕЕСТР сессий по вкладкам, константы и чистые селекторы.
+// Синхрон — принадлежность ВКЛАДКИ: каждая видео-вкладка держит свою `Session` (свой WS,
+// комнату, roster, активный фрейм). Реестр `sessions: Map<tabId, Session>` заменил бывший
+// глобальный синглтон — так несколько вкладок синхронятся независимо, без перехвата.
+// Roster-based (Фаза A): карта всех участников + per-peer блоки для баннера.
+// Ни от кого не зависит (только типы) — все остальные модули импортируют отсюда.
 
-import browser from '../shared/browser';
 import type { RosterPeer, ClientMessage } from '../shared/protocol';
-import type { BannerMsg } from '../shared/messages';
 
 export const KEEPALIVE_ALARM = 'syncwatch-keepalive';
 export const RECONNECT_ALARM = 'syncwatch-reconnect'; // персистентный фолбэк реконнекта (переживает выгрузку SW)
@@ -32,6 +32,8 @@ export function emptyBlock(): PeerBlock {
 }
 
 export interface Session {
+  /** Вкладка-владелец сессии (ключ реестра, фиксируется при connect). */
+  tabId: number;
   ws: WebSocket | null;
   connected: boolean;
   room: string;
@@ -49,8 +51,8 @@ export interface Session {
   /** Закрытие инициировано пользователем — не реконнектить (Фаза 4). */
   intentionalClose: boolean;
   driftThreshold: number;
-  /** Вкладка/фрейм активного плеера (куда слать удалённые команды). */
-  tabId: number | null;
+  /** Активный плеерный фрейм ВНУТРИ вкладки (куда слать удалённые команды).
+   *  tabId фиксирован; frameId двигается на каждом реальном событии плеера. */
   frameId: number;
   /** Последнее применённое/отправленное состояние — страховочный анти-эхо на уровне хаба. */
   lastSync: { action: string; currentTime: number } | null;
@@ -58,28 +60,62 @@ export interface Session {
   lastBannerKey: string;
   /** Метка последнего входящего сообщения — для watchdog. */
   lastRecvAt: number;
+  /** Per-session реконнект (раньше — модульные let в connection.ts). */
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  reconnectAttempt: number;
 }
 
-export const session: Session = {
-  ws: null,
-  connected: false,
-  room: '',
-  myConnId: -1,
-  roster: new Map(),
-  blocks: new Map(),
-  deviceName: '',
-  detached: false,
-  autoConnect: true,
-  intentionalClose: false,
-  driftThreshold: 1.0,
-  tabId: null,
-  frameId: 0,
-  lastSync: null,
-  lastBannerKey: 'none',
-  lastRecvAt: 0,
-};
+/** Свежая сессия для вкладки (ещё не подключена). */
+export function createSession(tabId: number): Session {
+  return {
+    tabId,
+    ws: null,
+    connected: false,
+    room: '',
+    myConnId: -1,
+    roster: new Map(),
+    blocks: new Map(),
+    deviceName: '',
+    detached: false,
+    autoConnect: true,
+    intentionalClose: false,
+    driftThreshold: 1.0,
+    frameId: 0,
+    lastSync: null,
+    lastBannerKey: 'none',
+    lastRecvAt: 0,
+    reconnectTimer: null,
+    reconnectAttempt: 0,
+  };
+}
 
-// ── Чистые селекторы над одной строкой roster (unit-testable без singleton) ──────
+// ── Реестр сессий по вкладкам ─────────────────────────────────────────────────
+
+const sessions = new Map<number, Session>();
+
+/** Сессия вкладки, создаётся при первом обращении. */
+export function getSession(tabId: number): Session {
+  let s = sessions.get(tabId);
+  if (!s) { s = createSession(tabId); sessions.set(tabId, s); }
+  return s;
+}
+
+/** Сессия вкладки, если существует (без создания). */
+export function peekSession(tabId: number): Session | undefined {
+  return sessions.get(tabId);
+}
+
+/** Забыть сессию вкладки (при закрытии/disconnect). Вызывающий сам гасит сокет. */
+export function forgetSession(tabId: number): void {
+  sessions.delete(tabId);
+}
+
+/** Все живые сессии (для глобальных алармов: keepalive/watchdog/reconnect). */
+export function allSessions(): Session[] {
+  return [...sessions.values()];
+}
+
+// ── Чистые селекторы над одной строкой roster (unit-testable без сессии) ────────
 
 /** host = опорный клиент дрейфа (единственный, кто шлёт BEAT). */
 export function computeAmHost(me: RosterPeer | undefined): boolean {
@@ -91,46 +127,40 @@ export function computeAmController(me: RosterPeer | undefined): boolean {
   return me?.isHost === true || me?.hasControl === true;
 }
 
-// ── Селекторы над singleton ──────────────────────────────────────────────────
+// ── Селекторы над сессией ──────────────────────────────────────────────────────
 
-export function amHost(): boolean {
-  return computeAmHost(session.roster.get(session.myConnId));
+export function amHost(s: Session): boolean {
+  return computeAmHost(s.roster.get(s.myConnId));
 }
 
-export function amController(): boolean {
-  return computeAmController(session.roster.get(session.myConnId));
+export function amController(s: Session): boolean {
+  return computeAmController(s.roster.get(s.myConnId));
 }
 
 /** Участники кроме нас (для «партнёр на связи» и рассылок). */
-export function livePeers(): RosterPeer[] {
+export function livePeers(s: Session): RosterPeer[] {
   const out: RosterPeer[] = [];
-  for (const p of session.roster.values()) {
-    if (p.id !== session.myConnId) out.push(p);
+  for (const p of s.roster.values()) {
+    if (p.id !== s.myConnId) out.push(p);
   }
   return out;
 }
 
 /** Имя участника по connId (или дефолт). */
-export function peerName(id: number | undefined): string {
+export function peerName(s: Session, id: number | undefined): string {
   if (id == null) return 'Партнёр';
-  return session.roster.get(id)?.name || 'Партнёр';
+  return s.roster.get(id)?.name || 'Партнёр';
 }
 
-/** Низкоуровневая отправка в WS. Гейтит ws/connected, гасит исключения.
+/** Низкоуровневая отправка в WS сессии. Гейтит ws/connected, гасит исключения.
  *  Живёт здесь (а не в connection.ts), чтобы sync.ts мог слать без цикла импортов. */
-export function sendWire(msg: ClientMessage): boolean {
-  const ws = session.ws;
-  if (!ws || !session.connected) return false;
+export function sendWire(s: Session, msg: ClientMessage): boolean {
+  const ws = s.ws;
+  if (!ws || !s.connected) return false;
   try {
     ws.send(JSON.stringify(msg));
     return true;
   } catch {
     return false; // сокет умер — close-обработчик подчистит
   }
-}
-
-/** Пуш баннера в верхний фрейм активной вкладки (frameId:0). */
-export function pushBanner(banner: BannerMsg): void {
-  if (session.tabId == null) return;
-  browser.tabs.sendMessage(session.tabId, banner, { frameId: 0 }).catch(() => { /* нет баннера */ });
 }

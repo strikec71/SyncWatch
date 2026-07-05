@@ -13,7 +13,7 @@ import type {
   RuntimeMessage,
 } from '../shared/messages';
 import {
-  session,
+  type Session,
   amHost,
   amController,
   livePeers,
@@ -81,141 +81,126 @@ export function aggregateBanner(
 
 // ── Мутаторы per-peer блоков (зовёт sync.ts на входящие STATE/BUFFER/AD) ──────
 
-function blockOf(id: number): PeerBlock {
-  let b = session.blocks.get(id);
-  if (!b) { b = emptyBlock(); session.blocks.set(id, b); }
+function blockOf(s: Session, id: number): PeerBlock {
+  let b = s.blocks.get(id);
+  if (!b) { b = emptyBlock(); s.blocks.set(id, b); }
   return b;
 }
 
-export function notePeerPaused(from: number | undefined, paused: boolean): void {
+export function notePeerPaused(s: Session, from: number | undefined, paused: boolean): void {
   if (from == null) return;
-  blockOf(from).paused = paused;
-  recomputeBanner();
+  blockOf(s, from).paused = paused;
+  recomputeBanner(s);
 }
 
-export function notePeerBuffer(from: number | undefined, buffering: boolean): void {
+export function notePeerBuffer(s: Session, from: number | undefined, buffering: boolean): void {
   if (from == null) return;
-  blockOf(from).buffer = buffering;
-  recomputeBanner();
+  blockOf(s, from).buffer = buffering;
+  recomputeBanner(s);
 }
 
-export function notePeerAd(from: number | undefined, ad: boolean): void {
+export function notePeerAd(s: Session, from: number | undefined, ad: boolean): void {
   if (from == null) return;
-  const b = blockOf(from);
+  const b = blockOf(s, from);
   if (ad && !b.ad) b.adSince = Date.now();
   b.ad = ad;
-  recomputeBanner();
+  recomputeBanner(s);
 }
 
 /** last-writer: наше локальное play/pause снимает «зависшую» паузу у всех участников. */
-export function clearPeerPausedFlags(): void {
+export function clearPeerPausedFlags(s: Session): void {
   let changed = false;
-  for (const b of session.blocks.values()) {
+  for (const b of s.blocks.values()) {
     if (b.paused) { b.paused = false; changed = true; }
   }
-  if (changed) recomputeBanner();
+  if (changed) recomputeBanner(s);
 }
 
 /** Полный сброс блоков (реконнект/выход) + гашение баннера. */
-export function clearBlocks(): void {
-  session.blocks.clear();
-  recomputeBanner();
+export function clearBlocks(s: Session): void {
+  s.blocks.clear();
+  recomputeBanner(s);
 }
 
 // ── Пуш баннера ──────────────────────────────────────────────────────────────
 
-export function recomputeBanner(): void {
-  const { state, since, name } = aggregateBanner(
-    session.blocks,
-    session.roster,
-    session.myConnId,
-  );
+export function recomputeBanner(s: Session): void {
+  const { state, since, name } = aggregateBanner(s.blocks, s.roster, s.myConnId);
   const key = `${state}|${name}|${since}`;
-  if (key === session.lastBannerKey) return;
-  session.lastBannerKey = key;
+  if (key === s.lastBannerKey) return;
+  s.lastBannerKey = key;
   const banner: BannerMsg = { kind: 'banner', state, since, name: name || 'Партнёр' };
-  if (session.tabId != null) {
-    browser.tabs.sendMessage(session.tabId, banner, { frameId: 0 }).catch(() => { /* нет баннера */ });
-  }
+  browser.tabs.sendMessage(s.tabId, banner, { frameId: 0 }).catch(() => { /* нет баннера */ });
 }
 
 // ── Применение ROSTER ─────────────────────────────────────────────────────────
 
 /** Применить снимок roster от сервера: обновить myConnId, вывести join/left diff-ом,
  *  подчистить блоки ушедших, пересчитать баннер и уведомить оверлей. */
-export function applyRoster(msg: RosterMessage): void {
-  const prev = session.roster;
-  session.myConnId = msg.self;
+export function applyRoster(s: Session, msg: RosterMessage): void {
+  const prev = s.roster;
+  s.myConnId = msg.self;
 
   const { joined, left } = diffRoster(prev, msg.peers);
   for (const p of joined) {
-    if (p.id !== msg.self) notifyEvent(`${p.name || 'Партнёр'} подключился`);
+    if (p.id !== msg.self) notifyEvent(s, `${p.name || 'Партнёр'} подключился`);
   }
   for (const p of left) {
-    if (p.id !== msg.self) notifyEvent(`${p.name || 'Партнёр'} отключился`);
+    if (p.id !== msg.self) notifyEvent(s, `${p.name || 'Партнёр'} отключился`);
   }
 
   const nextMap = new Map<number, RosterPeer>(msg.peers.map((p) => [p.id, p]));
-  for (const id of [...session.blocks.keys()]) {
-    if (!nextMap.has(id)) session.blocks.delete(id);
+  for (const id of [...s.blocks.keys()]) {
+    if (!nextMap.has(id)) s.blocks.delete(id);
   }
-  session.roster = nextMap;
+  s.roster = nextMap;
 
-  recomputeBanner();
-  notifyPopup();
+  recomputeBanner(s);
+  notifyPopup(s);
 }
 
 // ── Снимок состояния и уведомления оверлея ───────────────────────────────────
 
-export function statusSnapshot(): StatusSnapshot {
-  const peers = [...session.roster.values()];
-  const others = livePeers();
+export function statusSnapshot(s: Session): StatusSnapshot {
+  const peers = [...s.roster.values()];
+  const others = livePeers(s);
   return {
-    connected: session.connected,
+    connected: s.connected,
     peerPresent: others.length > 0,
-    room: session.room,
-    deviceName: session.deviceName,
+    room: s.room,
+    deviceName: s.deviceName,
     peerName: others[0]?.name || '',
     peers,
-    amHost: amHost(),
-    amController: amController(),
-    detached: session.detached,
-    self: session.myConnId, // RB2: единственный источник — метка строки «вы»
+    amHost: amHost(s),
+    amController: amController(s),
+    detached: s.detached,
+    self: s.myConnId, // RB2: единственный источник — метка строки «вы»
   };
 }
 
-export function notifyPopup(): void {
-  browser.runtime
-    .sendMessage({ kind: 'status', ...statusSnapshot() })
-    .catch(() => { /* оверлей закрыт — это нормально */ });
-}
-
-/** Доставить сообщение в оверлей (верхний фрейм). Если активная вкладка известна —
- *  туда; иначе (до первого player-event) — во все вкладки. Единая точка frame-0 пушей. */
-function sendToOverlays(msg: RuntimeMessage): void {
-  if (session.tabId != null) {
-    browser.tabs.sendMessage(session.tabId, msg, { frameId: 0 }).catch(() => { /* нет оверлея */ });
-    return;
-  }
+export function notifyPopup(s: Session): void {
+  // Статус — ТОЛЬКО в островок своей вкладки (frame 0), не runtime-бродкаст: иначе
+  // островки других вкладок получили бы чужой статус.
   browser.tabs
-    .query({})
-    .then((tabs) => {
-      for (const t of tabs) {
-        if (t.id != null) browser.tabs.sendMessage(t.id, msg, { frameId: 0 }).catch(() => { /* нет оверлея */ });
-      }
-    })
-    .catch(() => { /* tabs недоступны */ });
+    .sendMessage(s.tabId, { kind: 'status', ...statusSnapshot(s) }, { frameId: 0 })
+    .catch(() => { /* оверлея нет — нормально */ });
 }
 
-/** Событие активности в ленту оверлея. */
-export function notifyEvent(text: string): void {
+/** Доставить сообщение в островок СВОЕЙ вкладки (верхний фрейм). tabId сессии известен
+ *  с момента connect, поэтому всегда адресно (без бродкаста). */
+function sendToOverlays(s: Session, msg: RuntimeMessage): void {
+  browser.tabs.sendMessage(s.tabId, msg, { frameId: 0 }).catch(() => { /* нет оверлея */ });
+}
+
+/** Событие активности в ленту островка. */
+export function notifyEvent(s: Session, text: string): void {
   const ev: EventMsg = { kind: 'event', text, ts: Date.now() };
-  sendToOverlays(ev);
+  sendToOverlays(s, ev);
 }
 
-/** host получил REQUEST_CONTROL: предложить оверлею выдать право просителю. */
-export function pushControlRequest(from: number): void {
-  const name = session.roster.get(from)?.name || 'Партнёр';
+/** host получил REQUEST_CONTROL: предложить островку выдать право просителю. */
+export function pushControlRequest(s: Session, from: number): void {
+  const name = s.roster.get(from)?.name || 'Партнёр';
   const msg: ControlRequestMsg = { kind: 'control-request', from, name };
-  sendToOverlays(msg);
+  sendToOverlays(s, msg);
 }

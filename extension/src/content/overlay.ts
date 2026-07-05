@@ -29,6 +29,8 @@ export class Overlay {
   private myName = '';
   private last: StatusSnapshot | null = null;      // последний снимок (для кнопок)
   private requesting = new Set<number>();          // connId'ы гостей с висящим запросом контроля
+  private wantConnected = false;                   // намерение быть в комнате (для восстановления после выгрузки SW)
+  private lastConnectSentAt = 0;                   // антидребезг переотправки connect
 
   private $(id: string): HTMLElement { return this.shadow!.getElementById(id)!; }
   private input(id: string): HTMLInputElement { return this.$(id) as HTMLInputElement; }
@@ -60,10 +62,12 @@ export class Overlay {
 
     this.$('c').addEventListener('click', async () => {
       await this.persist();
-      void browser.runtime.sendMessage({ kind: 'connect' }).catch(() => {});
+      this.wantConnected = true;
+      this.sendConnect();
       window.setTimeout(() => void this.refresh(), 300);
     });
     this.$('d').addEventListener('click', () => {
+      this.wantConnected = false;
       void browser.runtime.sendMessage({ kind: 'disconnect' }).catch(() => {});
       window.setTimeout(() => void this.refresh(), 300);
     });
@@ -189,11 +193,31 @@ export class Overlay {
     btn.title = collapsed ? 'Развернуть' : 'Свернуть';
   }
 
+  /** Отправить connect с комнатой ЭТОЙ вкладки (room per-tab едет в сообщении). */
+  private sendConnect(): void {
+    const room = this.input('room').value.trim();
+    if (!room) return;
+    const serverUrl = this.input('serverUrl').value.trim() || undefined;
+    this.lastConnectSentAt = Date.now();
+    void browser.runtime.sendMessage({ kind: 'connect', room, serverUrl }).catch(() => {});
+  }
+
   private async refresh(): Promise<void> {
     const st = (await browser.runtime.sendMessage({ kind: 'get-status' }).catch(() => null)) as
       | StatusSnapshot
       | null;
     this.render(st);
+
+    // Восстановление после выгрузки SW: фон не помнит комнат, поэтому если мы ХОТИМ быть
+    // в комнате (жали «Войти», не «Выйти»), а статус «не подключено» — переотправляем
+    // connect. Антидребезг: не чаще раза в 4с (пока соединение поднимается).
+    if (
+      this.wantConnected && !st?.connected &&
+      this.input('auto').checked &&
+      Date.now() - this.lastConnectSentAt > 4000
+    ) {
+      this.sendConnect();
+    }
   }
 
   private render(st: StatusSnapshot | null): void {

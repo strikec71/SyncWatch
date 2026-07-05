@@ -19,7 +19,7 @@ import type {
   PlayerSnapshot,
   RuntimeMessage,
 } from '../shared/messages';
-import { session, sendWire, amHost, amController, ECHO_EPSILON, peerName } from './state';
+import { type Session, sendWire, amHost, amController, ECHO_EPSILON, peerName } from './state';
 import {
   notifyEvent,
   notePeerPaused,
@@ -58,33 +58,32 @@ export function canEmit(
 
 // ── Активный фрейм ────────────────────────────────────────────────────────────
 
-/** Отправить сообщение content-скрипту активного (плеерного) фрейма. */
-export function sendToActiveFrame(msg: RuntimeMessage): void {
-  if (session.tabId == null) return;
+/** Отправить сообщение content-скрипту активного (плеерного) фрейма вкладки сессии. */
+export function sendToActiveFrame(s: Session, msg: RuntimeMessage): void {
   browser.tabs
-    .sendMessage(session.tabId, msg, { frameId: session.frameId })
+    .sendMessage(s.tabId, msg, { frameId: s.frameId })
     .catch(() => { /* фрейм мог исчезнуть */ });
 }
 
-function markActiveFrame(tabId: number, frameId: number): void {
-  session.tabId = tabId;
-  session.frameId = frameId;
+/** tabId сессии фиксирован; двигаем только активный плеерный фрейм внутри вкладки. */
+function markActiveFrame(s: Session, frameId: number): void {
+  s.frameId = frameId;
 }
 
 // ── Локальные события плеера → сеть ───────────────────────────────────────────
 
-export function onPlayerEvent(msg: PlayerEventMsg, tabId: number, frameId: number): void {
-  markActiveFrame(tabId, frameId); // фрейм с реальным действием считаем активным
+export function onPlayerEvent(s: Session, msg: PlayerEventMsg, frameId: number): void {
+  markActiveFrame(s, frameId); // фрейм с реальным действием считаем активным
 
-  if (isEcho(session.lastSync, msg.action, msg.currentTime, ECHO_EPSILON)) {
-    session.lastSync = null;
+  if (isEcho(s.lastSync, msg.action, msg.currentTime, ECHO_EPSILON)) {
+    s.lastSync = null;
     return;
   }
 
   if (!canEmit(msg.action, {
-    amController: amController(),
-    detached: session.detached,
-    size: session.roster.size,
+    amController: amController(s),
+    detached: s.detached,
+    size: s.roster.size,
   })) {
     return;
   }
@@ -97,97 +96,97 @@ export function onPlayerEvent(msg: PlayerEventMsg, tabId: number, frameId: numbe
     paused: msg.paused,
     ts: Date.now(),
   };
-  sendWire(wire);
+  sendWire(s, wire);
 
   // last-writer: наше play/pause снимает «зависшую» паузу партнёра в баннере.
   // ТОЛЬКО для play/pause — seek/rate не отражают намерение паузы (минорфикс #2).
-  if (msg.action === 'play' || msg.action === 'pause') clearPeerPausedFlags();
+  if (msg.action === 'play' || msg.action === 'pause') clearPeerPausedFlags(s);
 }
 
-export function onBuffering(msg: BufferingMsg, tabId: number, frameId: number): void {
-  markActiveFrame(tabId, frameId);
-  if (session.detached) return;
+export function onBuffering(s: Session, msg: BufferingMsg, frameId: number): void {
+  markActiveFrame(s, frameId);
+  if (s.detached) return;
   const wire: BufferMessage = {
     type: 'BUFFER',
     buffering: msg.buffering,
     currentTime: msg.currentTime,
     ts: Date.now(),
   };
-  sendWire(wire);
+  sendWire(s, wire);
 }
 
-export function onBeat(msg: BeatMsg, tabId: number, frameId: number): void {
-  markActiveFrame(tabId, frameId);
+export function onBeat(s: Session, msg: BeatMsg, frameId: number): void {
+  markActiveFrame(s, frameId);
   // BEAT шлёт ТОЛЬКО host (опорный клиент дрейфа). Не host / detached — молчим.
-  if (session.detached || !amHost()) return;
+  if (s.detached || !amHost(s)) return;
   const wire: BeatMessage = {
     type: 'BEAT',
     currentTime: msg.currentTime,
     playing: msg.playing,
     ts: Date.now(),
   };
-  sendWire(wire);
+  sendWire(s, wire);
 }
 
-export function onAd(msg: AdMsg, tabId: number, frameId: number): void {
-  markActiveFrame(tabId, frameId);
-  if (session.detached) return;
+export function onAd(s: Session, msg: AdMsg, frameId: number): void {
+  markActiveFrame(s, frameId);
+  if (s.detached) return;
   const wire: AdMessage = { type: 'AD', ad: msg.ad, ts: Date.now() };
-  sendWire(wire);
-  notifyEvent(msg.ad ? 'У вас реклама — партнёр ждёт' : 'Ваша реклама закончилась');
+  sendWire(s, wire);
+  notifyEvent(s, msg.ad ? 'У вас реклама — партнёр ждёт' : 'Ваша реклама закончилась');
 }
 
 // ── Удалённые сообщения → плеер ──────────────────────────────────────────────
 
-export function applyRemoteState(state: StateMessage): void {
-  if (session.detached) return; // соло: смотрим независимо, чужое не применяем
-  if (state.to != null && state.to !== session.myConnId) return; // чужой направленный снапшот
+export function applyRemoteState(s: Session, state: StateMessage): void {
+  if (s.detached) return; // соло: смотрим независимо, чужое не применяем
+  if (state.to != null && state.to !== s.myConnId) return; // чужой направленный снапшот
 
   // Снапшот (STATE.to === myConnId, при join/un-detach) применяем тем же путём.
-  session.lastSync = { action: state.action, currentTime: state.currentTime };
-  sendToActiveFrame({
+  s.lastSync = { action: state.action, currentTime: state.currentTime };
+  sendToActiveFrame(s, {
     kind: 'apply',
     action: state.action,
     currentTime: state.currentTime,
     rate: state.rate,
     paused: state.paused,
   });
-  notifyEvent(partnerActionText(state));
-  notePeerPaused(state.from, state.paused);
+  notifyEvent(s, partnerActionText(s, state));
+  notePeerPaused(s, state.from, state.paused);
 }
 
-export function onRemoteBuffer(msg: BufferMessage): void {
-  if (session.detached) return;
-  sendToActiveFrame({ kind: 'buffer-control', buffering: msg.buffering });
-  notePeerBuffer(msg.from, msg.buffering);
+export function onRemoteBuffer(s: Session, msg: BufferMessage): void {
+  if (s.detached) return;
+  sendToActiveFrame(s, { kind: 'buffer-control', buffering: msg.buffering });
+  notePeerBuffer(s, msg.from, msg.buffering);
 }
 
-export function onRemoteAd(msg: AdMessage): void {
-  if (session.detached) return;
-  sendToActiveFrame({ kind: 'ad-control', ad: msg.ad });
-  const who = peerName(msg.from);
-  notifyEvent(msg.ad ? `${who} смотрит рекламу — ждём` : 'Реклама у партнёра закончилась');
-  notePeerAd(msg.from, msg.ad);
+export function onRemoteAd(s: Session, msg: AdMessage): void {
+  if (s.detached) return;
+  sendToActiveFrame(s, { kind: 'ad-control', ad: msg.ad });
+  const who = peerName(s, msg.from);
+  notifyEvent(s, msg.ad ? `${who} смотрит рекламу — ждём` : 'Реклама у партнёра закончилась');
+  notePeerAd(s, msg.from, msg.ad);
 }
 
-export function onRemoteBeat(msg: BeatMessage): void {
+export function onRemoteBeat(s: Session, msg: BeatMessage): void {
   // Дрейф правит только НЕ host и НЕ detached. Host — источник, себя не корректирует.
-  if (session.detached || amHost()) return;
-  sendToActiveFrame({
+  if (s.detached || amHost(s)) return;
+  sendToActiveFrame(s, {
     kind: 'sync-time',
     currentTime: msg.currentTime,
     ts: msg.ts,
-    driftThreshold: session.driftThreshold,
+    driftThreshold: s.driftThreshold,
   });
 }
 
 /** Мы host и сервер попросил снапшот участнику `target`: спросить активный фрейм и
  *  отправить направленный STATE{to:target}. Нет фрейма/снимка — молча пропускаем. */
-export async function pushSnapshot(req: SnapshotReqMessage): Promise<void> {
-  if (!amHost() || session.tabId == null) return;
+export async function pushSnapshot(s: Session, req: SnapshotReqMessage): Promise<void> {
+  if (!amHost(s)) return;
   try {
     const snap = (await browser.tabs.sendMessage(
-      session.tabId, { kind: 'get-snapshot' }, { frameId: session.frameId },
+      s.tabId, { kind: 'get-snapshot' }, { frameId: s.frameId },
     )) as PlayerSnapshot | undefined;
     if (!snap) return;
     const wire: StateMessage = {
@@ -199,14 +198,14 @@ export async function pushSnapshot(req: SnapshotReqMessage): Promise<void> {
       ts: Date.now(),
       to: req.target,
     };
-    sendWire(wire);
+    sendWire(s, wire);
   } catch { /* фрейма/снимка нет — пропускаем (R4) */ }
 }
 
 // ── Тексты ───────────────────────────────────────────────────────────────────
 
-function partnerActionText(state: StateMessage): string {
-  const who = peerName(state.from);
+function partnerActionText(s: Session, state: StateMessage): string {
+  const who = peerName(s, state.from);
   switch (state.action) {
     case 'play': return `${who} продолжил воспроизведение`;
     case 'pause': return `${who} поставил на паузу`;

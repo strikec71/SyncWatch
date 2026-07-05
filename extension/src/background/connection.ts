@@ -1,6 +1,7 @@
-// WebSocket-жизнецикл хаба: connect/disconnect, hardened reconnect (экспоненциальный
-// backoff с джиттером, без предела попыток), dead-socket watchdog, onWire-диспетчер.
-// Zombie-gate инвариант сохранён: КАЖДЫЙ обработчик сокета гейтится `session.ws !== ws`.
+// WebSocket-жизнецикл хаба ПО ВКЛАДКАМ: connect/disconnect на конкретную `Session`,
+// hardened reconnect (backoff с джиттером в самой сессии), dead-socket watchdog, onWire.
+// Zombie-gate инвариант сохранён: КАЖДЫЙ обработчик сокета гейтится `s.ws !== ws`.
+// Аларм-тики (keepalive/reconnect) итерируют все сессии — их гоняет index.ts.
 
 import browser from '../shared/browser';
 import { loadSettings, ensureDeviceName } from '../shared/settings';
@@ -15,7 +16,7 @@ import type {
   RequestControlMessage,
 } from '../shared/protocol';
 import {
-  session,
+  type Session,
   sendWire,
   amHost,
   KEEPALIVE_ALARM,
@@ -40,55 +41,56 @@ import {
   pushSnapshot,
 } from './sync';
 
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let reconnectAttempt = 0;
-
 /** Чистый расчёт задержки реконнекта: min(CAP, BASE·2^attempt) + джиттер (Фаза A). */
 export function computeBackoff(attempt: number, rand: number = Math.random()): number {
   const exp = Math.min(BACKOFF_CAP, BACKOFF_BASE * 2 ** Math.max(0, attempt));
   return exp + Math.floor(rand * BACKOFF_JITTER);
 }
 
-/** Установить соединение. Используется и пользователем, и авто-реконнектом — сам
- *  reconnectAttempt НЕ трогает (растёт в scheduleReconnect, сбрасывается на `open`). */
-export async function connect(): Promise<{ ok: boolean; error?: string }> {
+/** Установить соединение вкладки к её комнате. `s.tabId` уже задан (при роутинге connect).
+ *  Комната/сервер приходят от вызывающего (per-tab), остальное — из глобальных настроек. */
+export async function connect(
+  s: Session,
+  room: string,
+  serverUrl?: string,
+): Promise<{ ok: boolean; error?: string }> {
   const settings = await loadSettings();
-  if (!settings.room) return { ok: false, error: 'Не задан код комнаты' };
-  if (!settings.serverUrl) return { ok: false, error: 'Не задан адрес сервера' };
+  const useRoom = (room || s.room).trim();
+  const useServer = (serverUrl || settings.serverUrl).replace(/\/+$/, '');
+  if (!useRoom) return { ok: false, error: 'Не задан код комнаты' };
+  if (!useServer) return { ok: false, error: 'Не задан адрес сервера' };
 
-  teardownSocket(); // тихо снимаем старый сокет, не трогая backoff/intentionalClose
+  teardownSocket(s); // тихо снимаем старый сокет, не трогая backoff/intentionalClose
 
-  session.deviceName = await ensureDeviceName();
-  session.autoConnect = settings.autoConnect;
-  session.intentionalClose = false;
-  session.driftThreshold = settings.driftThreshold;
+  s.deviceName = await ensureDeviceName();
+  s.autoConnect = settings.autoConnect;
+  s.intentionalClose = false;
+  s.driftThreshold = settings.driftThreshold;
+  s.room = useRoom;
 
-  const base = settings.serverUrl.replace(/\/+$/, '');
-  const url = `${base}/room/${encodeURIComponent(settings.room)}`;
+  const url = `${useServer}/room/${encodeURIComponent(useRoom)}`;
 
   try {
     const ws = new WebSocket(url);
-    session.ws = ws;
-    session.room = settings.room;
+    s.ws = ws;
 
     // Zombie-gate: события устаревшего сокета (заменённого в connect/реконнекте) НЕ
-    // должны трогать session, кормить onWire или планировать реконнект. Иначе поздний
-    // close старого сокета обнулит session.ws нового → «сокет-зомби» (приём жив, отправка мертва).
+    // должны трогать сессию, кормить onWire или планировать реконнект. Иначе поздний
+    // close старого сокета обнулит s.ws нового → «сокет-зомби» (приём жив, отправка мертва).
     ws.addEventListener('open', () => {
-      if (session.ws !== ws) return;
-      session.connected = true;
-      session.lastRecvAt = Date.now();
-      reconnectAttempt = 0; // успешное соединение сбрасывает backoff
-      void browser.alarms.clear(RECONNECT_ALARM); // на связи — персистентный фолбэк больше не нужен
-      sendWire({ type: 'JOIN', room: settings.room, name: session.deviceName });
-      if (session.detached) sendWire({ type: 'MODE', detached: true }); // соло переживает реконнект
-      browser.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // keepalive; браузер клампит период к своему минимуму (Chrome ~30с, FF ~60с)
-      notifyEvent(`Подключено к комнате «${settings.room}»`);
-      notifyPopup();
+      if (s.ws !== ws) return;
+      s.connected = true;
+      s.lastRecvAt = Date.now();
+      s.reconnectAttempt = 0; // успешное соединение сбрасывает backoff
+      sendWire(s, { type: 'JOIN', room: useRoom, name: s.deviceName });
+      if (s.detached) sendWire(s, { type: 'MODE', detached: true }); // соло переживает реконнект
+      browser.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // keepalive; браузер клампит к минимуму (Chrome ~30с, FF ~60с)
+      notifyEvent(s, `Подключено к комнате «${useRoom}»`);
+      notifyPopup(s);
     });
-    ws.addEventListener('message', (evt) => { if (session.ws === ws) onWire(evt.data); });
-    ws.addEventListener('close', () => { if (session.ws === ws) onSocketDown(); });
-    ws.addEventListener('error', () => { if (session.ws === ws) onSocketDown(); });
+    ws.addEventListener('message', (evt) => { if (s.ws === ws) onWire(s, evt.data); });
+    ws.addEventListener('close', () => { if (s.ws === ws) onSocketDown(s); });
+    ws.addEventListener('error', () => { if (s.ws === ws) onSocketDown(s); });
 
     return { ok: true };
   } catch (e) {
@@ -96,53 +98,51 @@ export async function connect(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-/** Пользователь отключился: реконнекта нет, backoff сброшен, сокет снят. */
-export function disconnect(): void {
-  session.intentionalClose = true;
-  cancelReconnect();
-  void browser.alarms.clear(RECONNECT_ALARM); // намеренный disconnect гасит и персистентный фолбэк
-  teardownSocket();
+/** Пользователь отключил вкладку: реконнекта нет, backoff сброшен, сокет снят. */
+export function disconnect(s: Session): void {
+  s.intentionalClose = true;
+  cancelReconnect(s);
+  teardownSocket(s);
 }
 
-/** Снять текущий сокет и связанное состояние. НЕ трогает reconnectAttempt/intentionalClose. */
-function teardownSocket(): void {
-  browser.alarms.clear(KEEPALIVE_ALARM);
-  if (session.ws) {
-    try { session.ws.close(); } catch { /* already closed */ }
+/** Снять текущий сокет и связанное состояние сессии. НЕ трогает backoff/intentionalClose. */
+function teardownSocket(s: Session): void {
+  if (s.ws) {
+    try { s.ws.close(); } catch { /* already closed */ }
   }
-  session.ws = null;
-  session.connected = false;
-  session.myConnId = -1;
-  session.roster.clear();
-  clearBlocks(); // сброс per-peer блоков + гашение баннера
-  notifyPopup();
+  s.ws = null;
+  s.connected = false;
+  s.myConnId = -1;
+  s.roster.clear();
+  clearBlocks(s); // сброс per-peer блоков + гашение баннера
+  notifyPopup(s);
 }
 
 /** Сокет упал (close/error/watchdog): снимаем и, если уместно, реконнектим. */
-function onSocketDown(): void {
-  if (!session.intentionalClose) notifyEvent('Соединение потеряно — переподключаюсь…');
-  teardownSocket();
-  scheduleReconnect();
+function onSocketDown(s: Session): void {
+  if (!s.intentionalClose) notifyEvent(s, 'Соединение потеряно — переподключаюсь…');
+  teardownSocket(s);
+  scheduleReconnect(s);
 }
 
-function scheduleReconnect(): void {
-  if (session.intentionalClose || !session.autoConnect || !session.room) return;
+function scheduleReconnect(s: Session): void {
+  if (s.intentionalClose || !s.autoConnect || !s.room) return;
   // Персистентный фолбэк: alarm переживает выгрузку service worker и разбудит нас, даже
   // если быстрый setTimeout ниже будет потерян (MV3 НЕ продлевает жизнь SW ради pending
   // setTimeout). Идемпотентно; период браузер клампит к минимуму (~30с). Снимается на
   // успешном open, при disconnect и когда reconnectDecision → 'clear'.
   browser.alarms.create(RECONNECT_ALARM, { periodInMinutes: 0.5 });
-  if (reconnectTimer != null) return;
-  const delay = computeBackoff(reconnectAttempt);
-  reconnectAttempt++;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    void connect();
+  if (s.reconnectTimer != null) return;
+  const delay = computeBackoff(s.reconnectAttempt);
+  s.reconnectAttempt++;
+  s.reconnectTimer = setTimeout(() => {
+    s.reconnectTimer = null;
+    void connect(s, s.room);
   }, delay);
 }
 
-/** Решение alarm-фолбэка (чистое, тестируемое). `clear` — реконнект больше не нужен,
- *  снять alarm; `wait` — быстрый setTimeout ещё запланирован (SW жив), не мешаем;
+/** Решение alarm-фолбэка (чистое, тестируемое). `clear` — реконнект больше не нужен;
+ *  `wait` — быстрый setTimeout ещё запланирован (SW жив), не мешаем;
  *  `connect` — форсируем попытку (типично после выгрузки SW: setTimeout был потерян). */
 export type ReconnectDecision = 'clear' | 'wait' | 'connect';
 export function reconnectDecision(p: {
@@ -157,70 +157,67 @@ export function reconnectDecision(p: {
   return 'connect';
 }
 
-/** Тик персистентного фолбэка (вызывается из onAlarm на RECONNECT_ALARM). */
-export function reconnectTick(): void {
+/** Тик персистентного фолбэка для одной сессии (вызывается из onAlarm по всем сессиям). */
+export function reconnectTick(s: Session): void {
   const decision = reconnectDecision({
-    intentionalClose: session.intentionalClose,
-    autoConnect: session.autoConnect,
-    room: session.room,
-    connected: session.connected,
-    timerPending: reconnectTimer != null,
+    intentionalClose: s.intentionalClose,
+    autoConnect: s.autoConnect,
+    room: s.room,
+    connected: s.connected,
+    timerPending: s.reconnectTimer != null,
   });
-  if (decision === 'clear') {
-    void browser.alarms.clear(RECONNECT_ALARM);
-    return;
-  }
-  if (decision === 'wait') return; // SW жив, setTimeout дожмёт сам
-  void connect(); // connect() сам снимает полу-открытый сокет (teardownSocket); zombie-gate прикрывает гонку
+  if (decision === 'wait') return;      // SW жив, setTimeout дожмёт сам
+  if (decision === 'connect') void connect(s, s.room); // connect() сам снимет полу-открытый сокет
+  // 'clear' — этой сессии реконнект не нужен; аларм гасит index.ts, когда он не нужен НИКОМУ.
 }
 
 /** Отменить запланированный реконнект и сбросить счётчик попыток (явное действие пользователя). */
-export function cancelReconnect(): void {
-  if (reconnectTimer != null) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
+export function cancelReconnect(s: Session): void {
+  if (s.reconnectTimer != null) {
+    clearTimeout(s.reconnectTimer);
+    s.reconnectTimer = null;
   }
-  reconnectAttempt = 0;
+  s.reconnectAttempt = 0;
 }
 
-/** Watchdog: если соединение живо, но молчит дольше порога — форсируем реконнект. */
-export function checkWatchdog(): void {
-  if (!session.connected || !session.ws) return;
-  if (Date.now() - session.lastRecvAt > WATCHDOG_SILENCE_MS) {
-    notifyEvent('Соединение зависло — переподключаюсь…');
-    onSocketDown();
+/** Watchdog одной сессии: соединение живо, но молчит дольше порога — форсируем реконнект. */
+export function checkWatchdog(s: Session): void {
+  if (!s.connected || !s.ws) return;
+  if (Date.now() - s.lastRecvAt > WATCHDOG_SILENCE_MS) {
+    notifyEvent(s, 'Соединение зависло — переподключаюсь…');
+    onSocketDown(s);
   }
 }
 
-/** Диспетчер входящих WS-сообщений. Валидируем общим parseWire (тем же, что сервер). */
-function onWire(raw: unknown): void {
+/** Диспетчер входящих WS-сообщений сессии. Валидируем общим parseWire (тем же, что сервер). */
+function onWire(s: Session, raw: unknown): void {
   const msg = parseWire(raw);
   if (!msg) return; // мусор/невалидная форма — игнорируем
-  session.lastRecvAt = Date.now();
+  s.lastRecvAt = Date.now();
 
   switch (msg.type) {
     case 'ROSTER':
-      applyRoster(msg as RosterMessage);
+      applyRoster(s, msg as RosterMessage);
       break;
     case 'STATE':
-      applyRemoteState(msg as StateMessage);
+      applyRemoteState(s, msg as StateMessage);
       break;
     case 'BUFFER':
-      onRemoteBuffer(msg as BufferMessage);
+      onRemoteBuffer(s, msg as BufferMessage);
       break;
     case 'AD':
-      onRemoteAd(msg as AdMessage);
+      onRemoteAd(s, msg as AdMessage);
       break;
     case 'BEAT':
-      onRemoteBeat(msg as BeatMessage);
+      onRemoteBeat(s, msg as BeatMessage);
       break;
     case 'SNAPSHOT_REQ':
-      void pushSnapshot(msg as SnapshotReqMessage);
+      void pushSnapshot(s, msg as SnapshotReqMessage);
       break;
     case 'REQUEST_CONTROL': {
       // Сервер релеит его ТОЛЬКО host'у, так что amHost() держится; гейт — defense-in-depth (RB5).
       const req = msg as RequestControlMessage;
-      if (amHost() && req.from != null) pushControlRequest(req.from);
+      if (amHost(s) && req.from != null) pushControlRequest(s, req.from);
       break;
     }
     // JOIN/CONTROL/MODE/PING — server→client их не шлёт; игнорируем.
