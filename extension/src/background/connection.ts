@@ -25,6 +25,8 @@ import {
   BACKOFF_CAP,
   BACKOFF_JITTER,
   WATCHDOG_SILENCE_MS,
+  IDLE_DISCONNECT_MS,
+  isIdleExpired,
 } from './state';
 import {
   applyRoster,
@@ -81,6 +83,7 @@ export async function connect(
       if (s.ws !== ws) return;
       s.connected = true;
       s.lastRecvAt = Date.now();
+      s.lastActivityAt = Date.now(); // отсчёт простоя идёт от подключения, даже без единого события
       s.reconnectAttempt = 0; // успешное соединение сбрасывает backoff
       sendWire(s, { type: 'JOIN', room: useRoom, name: s.deviceName });
       if (s.detached) sendWire(s, { type: 'MODE', detached: true }); // соло переживает реконнект
@@ -187,6 +190,22 @@ export function checkWatchdog(s: Session): void {
     notifyEvent(s, 'Соединение зависло — переподключаюсь…');
     onSocketDown(s);
   }
+}
+
+/** Простой одной сессии: живой сокет без реальной активности просмотра дольше
+ *  IDLE_DISCONNECT_MS → закрываем БЕЗ реконнекта (экономия серверного трафика на
+ *  забытой вкладке-паузе). Возврат — только вручную. Сессию не забываем: островок
+ *  покажет «не подключено» с пред-заполненной комнатой, готовой к повторному «Войти». */
+export function checkIdle(s: Session): void {
+  if (!isIdleExpired({
+    connected: s.connected,
+    intentionalClose: s.intentionalClose,
+    lastActivityAt: s.lastActivityAt,
+    now: Date.now(),
+    idleMs: IDLE_DISCONNECT_MS,
+  })) return;
+  notifyEvent(s, 'Отключено по простою (пауза дольше 1,5 ч) — нажмите «Войти», чтобы вернуться');
+  disconnect(s);
 }
 
 /** Диспетчер входящих WS-сообщений сессии. Валидируем общим parseWire (тем же, что сервер). */

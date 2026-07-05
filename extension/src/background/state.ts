@@ -19,6 +19,15 @@ export const BACKOFF_JITTER = 1000; // мс — верхняя граница с
 // Dead-socket watchdog (Фаза A): если соединение «молчит» дольше — форсируем реконнект.
 export const WATCHDOG_SILENCE_MS = 45000;
 
+// Авто-дисконнект по простою: если нет НИКАКОЙ реальной активности просмотра (beat при
+// воспроизведении, событие плеера, входящий STATE/BEAT) дольше этого — сокет закрывается
+// БЕЗ авто-реконнекта, чтобы не жечь серверный трафик на забытой вкладке-паузе. Возврат —
+// только вручную («Войти»). Порог намеренно большой: пока смотрят (beat каждые ~3с) или
+// жмут кнопки — таймер сбрасывается; молчит только настоящая пауза/заброшенная вкладка.
+// Отличать от watchdog (тот про мёртвый сокет и РЕКОННЕКТИТ; этот про живой-но-простаивающий
+// и НЕ реконнектит) и от lastRecvAt (тот дёргает PING/roster — здесь не считается активностью).
+export const IDLE_DISCONNECT_MS = 90 * 60 * 1000; // 1,5 часа
+
 /** Блокирующее состояние одного участника — вход для центрального баннера (Фаза 7). */
 export interface PeerBlock {
   paused: boolean;
@@ -60,6 +69,9 @@ export interface Session {
   lastBannerKey: string;
   /** Метка последнего входящего сообщения — для watchdog. */
   lastRecvAt: number;
+  /** Метка последней РЕАЛЬНОЙ активности просмотра (beat/событие плеера/STATE) — для
+   *  авто-дисконнекта по простою. НЕ обновляется PING/roster (в отличие от lastRecvAt). */
+  lastActivityAt: number;
   /** Per-session реконнект (раньше — модульные let в connection.ts). */
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   reconnectAttempt: number;
@@ -84,9 +96,29 @@ export function createSession(tabId: number): Session {
     lastSync: null,
     lastBannerKey: 'none',
     lastRecvAt: 0,
+    lastActivityAt: 0,
     reconnectTimer: null,
     reconnectAttempt: 0,
   };
+}
+
+/** Пора ли рвать простаивающее соединение (чисто, тестируемо). Рвём только живой
+ *  сокет пользователя, который не закрывался вручную и молчит по активности дольше idleMs.
+ *  `lastActivityAt === 0` (ещё не было ни одной активности после connect) не срабатывает —
+ *  connect проставляет метку на open, так что отсчёт всегда идёт от подключения. */
+export function isIdleExpired(p: {
+  connected: boolean;
+  intentionalClose: boolean;
+  lastActivityAt: number;
+  now: number;
+  idleMs: number;
+}): boolean {
+  return (
+    p.connected &&
+    !p.intentionalClose &&
+    p.lastActivityAt > 0 &&
+    p.now - p.lastActivityAt >= p.idleMs
+  );
 }
 
 // ── Реестр сессий по вкладкам ─────────────────────────────────────────────────
