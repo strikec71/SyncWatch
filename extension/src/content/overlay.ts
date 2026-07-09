@@ -10,7 +10,7 @@
 // tabs.sendMessage(frame 0) → ловим runtime.onMessage.
 
 import browser from '../shared/browser';
-import { loadSettings, saveSettings, ensureDeviceName } from '../shared/settings';
+import { loadSettings, saveSettings, ensureDeviceName, type Settings } from '../shared/settings';
 import type { StatusSnapshot, RuntimeMessage } from '../shared/messages';
 import { friendlyCode, decideRowControls, detachButton, buildRosterRow } from './overlay-roster';
 import { TEMPLATE } from './overlay-template';
@@ -25,6 +25,7 @@ export class Overlay {
   private shadow: ShadowRoot | null = null;
   private pollTimer: number | null = null;
   private onMsg: ((msg: RuntimeMessage) => void) | null = null;
+  private onStorage: Parameters<typeof browser.storage.onChanged.addListener>[0] | null = null;
   private onFsChange: (() => void) | null = null;
   private myName = '';
   private last: StatusSnapshot | null = null;      // последний снимок (для кнопок)
@@ -61,7 +62,9 @@ export class Overlay {
     this.input('auto').checked = s.autoConnect;
 
     this.$('c').addEventListener('click', async () => {
-      await this.persist();
+      const room = this.input('room').value.trim();
+      if (!room) { this.hint('Сначала задайте код комнаты'); return; }
+      await this.persistForConnect();
       this.wantConnected = true;
       this.sendConnect();
       window.setTimeout(() => void this.refresh(), 300);
@@ -73,9 +76,15 @@ export class Overlay {
     });
 
     this.$('create').addEventListener('click', async () => {
-      this.input('room').value = friendlyCode();
-      await this.persist();
-      this.hint(`Комната «${this.input('room').value}» создана`);
+      const code = friendlyCode();
+      this.input('room').value = code;
+      await saveSettings({ room: code });
+      // Код комнаты — только договорённость об имени; без адреса сервера подключаться некуда.
+      if (!this.input('serverUrl').value.trim()) {
+        this.hint(`Комната «${code}» создана — укажите адрес сервера в «Ещё»`);
+      } else {
+        this.hint(`Комната «${code}» создана`);
+      }
     });
 
     this.$('invite').addEventListener('click', () => void this.copyInvite());
@@ -88,8 +97,23 @@ export class Overlay {
     });
 
     for (const id of ['room', 'serverUrl', 'drift', 'dev', 'auto']) {
-      this.$(id).addEventListener('change', () => void this.persist());
+      this.$(id).addEventListener('change', () => void this.persistField(id));
     }
+
+    // Настройки глобальны на все вкладки: если их поменял другой островок / инвайт-ссылка,
+    // подтягиваем в наши поля — иначе этот островок остаётся со старыми (пустыми) значениями
+    // и при следующем persist затёр бы чужое. Поле в фокусе не трогаем (пользователь печатает).
+    this.onStorage = (changes, area) => {
+      if (area !== 'local' || !changes.settings) return;
+      const next = changes.settings.newValue as Partial<Settings> | undefined;
+      if (!next) return;
+      this.syncField('room', next.room);
+      this.syncField('serverUrl', next.serverUrl);
+      this.syncField('drift', next.driftThreshold);
+      this.syncField('auto', next.autoConnect);
+      if (next.deviceName) { this.myName = next.deviceName; this.syncField('dev', next.deviceName); }
+    };
+    browser.storage.onChanged.addListener(this.onStorage);
 
     this.$('m').addEventListener('click', () => this.toggleCollapsed());
     this.enableDrag(host, this.$('h'));
@@ -142,6 +166,7 @@ export class Overlay {
   unmount(): void {
     if (this.pollTimer) { window.clearInterval(this.pollTimer); this.pollTimer = null; }
     if (this.onMsg) { browser.runtime.onMessage.removeListener(this.onMsg); this.onMsg = null; }
+    if (this.onStorage) { browser.storage.onChanged.removeListener(this.onStorage); this.onStorage = null; }
     if (this.onFsChange) {
       document.removeEventListener('fullscreenchange', this.onFsChange);
       document.removeEventListener('webkitfullscreenchange', this.onFsChange);
@@ -152,23 +177,58 @@ export class Overlay {
     this.shadow = null;
   }
 
-  private async persist(): Promise<void> {
-    this.myName = this.input('dev').value.trim() || this.myName;
-    await saveSettings({
-      room: this.input('room').value.trim(),
-      serverUrl: this.input('serverUrl').value.trim(),
-      driftThreshold: parseFloat(this.input('drift').value) || 1.0,
-      deviceName: this.myName,
-      autoConnect: this.input('auto').checked,
-    });
+  /** Сохранить ТОЛЬКО изменённое поле. Раньше писались все поля разом — устаревший
+   *  островок другой вкладки (с пустым serverUrl в инпуте) затирал сохранённый сервер
+   *  при любом change/создании комнаты. Это был баг «сервер сбрасывается». */
+  private async persistField(id: string): Promise<void> {
+    switch (id) {
+      case 'room':
+        await saveSettings({ room: this.input('room').value.trim() });
+        return;
+      case 'serverUrl':
+        await saveSettings({ serverUrl: this.input('serverUrl').value.trim() });
+        return;
+      case 'drift':
+        await saveSettings({ driftThreshold: parseFloat(this.input('drift').value) || 1.0 });
+        return;
+      case 'dev':
+        this.myName = this.input('dev').value.trim() || this.myName;
+        await saveSettings({ deviceName: this.myName });
+        return;
+      case 'auto':
+        await saveSettings({ autoConnect: this.input('auto').checked });
+        return;
+    }
   }
 
-  /** «Позвать» = ссылка на текущее видео с кодом комнаты (#syncwatch=…). Открывается прямо
-   *  на странице плеера и подключает партнёра к той же комнате. */
+  /** Перед «Войти»: сохранить комнату и НЕПУСТОЙ сервер (пустой не пишем — не затираем
+   *  сохранённый адрес, если это поле в данной вкладке ещё не заполнялось). */
+  private async persistForConnect(): Promise<void> {
+    await saveSettings({ room: this.input('room').value.trim() });
+    const server = this.input('serverUrl').value.trim();
+    if (server) await saveSettings({ serverUrl: server });
+  }
+
+  /** Подтянуть значение поля из настроек (изменённых другой вкладкой), не трогая фокус. */
+  private syncField(id: string, value: string | number | boolean | undefined): void {
+    if (value === undefined || !this.shadow) return;
+    const el = this.input(id);
+    if (this.shadow.activeElement === el) return; // пользователь печатает — не мешаем
+    if (typeof value === 'boolean') el.checked = value;
+    else el.value = String(value);
+  }
+
+  /** «Позвать» = ссылка на текущее видео с кодом комнаты И сервером (#syncwatch=…&s=…).
+   *  Сервер обязателен: без него у приглашённого с чистой установкой подключаться некуда
+   *  (дефолтного публичного релея нет) — это был баг «ссылка не подключает». */
   private async copyInvite(): Promise<void> {
     const room = this.input('room').value.trim();
     if (!room) { this.hint('Сначала задайте комнату'); return; }
-    const link = `${location.href.split('#')[0]}#syncwatch=${encodeURIComponent(room)}`;
+    const server = this.input('serverUrl').value.trim();
+    if (!server) { this.hint('Укажите адрес сервера в «Ещё» — без него приглашение не сработает'); return; }
+    const link =
+      `${location.href.split('#')[0]}#syncwatch=${encodeURIComponent(room)}` +
+      `&s=${encodeURIComponent(server)}`;
     await this.copy(link, 'Ссылка-приглашение скопирована');
   }
 
@@ -193,13 +253,24 @@ export class Overlay {
     btn.title = collapsed ? 'Развернуть' : 'Свернуть';
   }
 
-  /** Отправить connect с комнатой ЭТОЙ вкладки (room per-tab едет в сообщении). */
+  /** Отправить connect с комнатой ЭТОЙ вкладки (room per-tab едет в сообщении).
+   *  Ошибку от background (нет сервера/комнаты) показываем тостом — раньше ответ молча
+   *  игнорировался, и «Войти» без сервера выглядело как «ничего не произошло». */
   private sendConnect(): void {
     const room = this.input('room').value.trim();
     if (!room) return;
     const serverUrl = this.input('serverUrl').value.trim() || undefined;
     this.lastConnectSentAt = Date.now();
-    void browser.runtime.sendMessage({ kind: 'connect', room, serverUrl }).catch(() => {});
+    void browser.runtime
+      .sendMessage({ kind: 'connect', room, serverUrl })
+      .then((r: unknown) => {
+        const res = r as { ok?: boolean; error?: string } | undefined;
+        if (res && res.ok === false && res.error) {
+          this.wantConnected = false; // не долбить авто-повтором заведомо неисправный connect
+          this.hint(res.error);
+        }
+      })
+      .catch(() => {});
   }
 
   private async refresh(): Promise<void> {

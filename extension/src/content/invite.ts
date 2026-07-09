@@ -31,27 +31,33 @@ async function apply(room: string, serverUrl?: string): Promise<void> {
   try {
     history.replaceState(null, '', location.pathname + location.search);
   } catch { /* некоторые песочницы запрещают replaceState */ }
-  await browser.runtime
+  const res = (await browser.runtime
     .sendMessage({ kind: 'connect', room, serverUrl })
-    .catch(() => { /* SW перезапускается */ });
-  showToast(`SyncWatch: подключаюсь к комнате «${room}»…`);
+    .catch(() => null)) as { ok?: boolean; error?: string } | null; // null → SW перезапускается
+  if (res && res.ok === false) {
+    // Типичный случай: старая ссылка без `s=` на устройстве без сохранённого сервера.
+    showToast(`SyncWatch: ${res.error ?? 'не удалось подключиться'} — откройте островок и заполните «Ещё» → «Сервер»`, true);
+  } else {
+    showToast(`SyncWatch: подключаюсь к комнате «${room}»…`);
+  }
 }
 
 function safeDecode(s: string): string {
   try { return decodeURIComponent(s); } catch { return s; }
 }
 
-/** Короткое всплывающее подтверждение (3с). Оверлей Фазы 5 затем показывает статус. */
-function showToast(text: string): void {
+/** Короткое всплывающее подтверждение (3с; ошибка — 6с). Оверлей Фазы 5 затем показывает статус. */
+function showToast(text: string, isError = false): void {
   const host = document.createElement('div');
   host.style.cssText = 'position:fixed;z-index:2147483647;top:16px;left:50%;transform:translateX(-50%);';
   const shadow = host.attachShadow({ mode: 'open' });
   const box = document.createElement('div');
   box.textContent = text;
   box.style.cssText =
-    'font-family:system-ui,sans-serif;font-size:13px;color:#fff;background:#1a73e8;' +
-    'padding:9px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3);';
+    'font-family:system-ui,sans-serif;font-size:13px;color:#fff;' +
+    `background:${isError ? '#d93025' : '#1a73e8'};` +
+    'padding:9px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:80vw;';
   shadow.appendChild(box);
   document.documentElement.appendChild(host);
-  setTimeout(() => host.remove(), 3000);
+  setTimeout(() => host.remove(), isError ? 6000 : 3000);
 }

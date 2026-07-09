@@ -94,6 +94,11 @@ export function onPlayerEvent(s: Session, msg: PlayerEventMsg, frameId: number):
     detached: s.detached,
     size: s.roster.size,
   })) {
+    // ⚠️ Критично для ≥3: действие НЕ ушло в сеть, но локальный плеер его уже выполнил —
+    // наш просмотр «форкнулся» от комнаты (играем, пока все стоят / уехали по перемотке).
+    // Молча бросить нельзя (это разваливало синхрон у троих) — просим у сервера снапшот
+    // хоста и откатываемся к общему состоянию. Detach не трогаем — там расход намеренный.
+    if (!s.detached) requestGateResync(s);
     return;
   }
 
@@ -144,6 +149,21 @@ export function onAd(s: Session, msg: AdMsg, frameId: number): void {
   const wire: AdMessage = { type: 'AD', ad: msg.ad, ts: Date.now() };
   sendWire(s, wire);
   notifyEvent(s, msg.ad ? 'У вас реклама — партнёр ждёт' : 'Ваша реклама закончилась');
+}
+
+// Не чаще раза в 3с: серия seek/ratechange от одного жеста не должна спамить хоста.
+const GATE_RESYNC_THROTTLE_MS = 3000;
+
+/** Заблокированное гейтом действие уже исполнилось локально → вернуть себя к состоянию
+ *  комнаты. MODE{detached:false} на сервере (уже задеплоенном) идемпотентен и триггерит
+ *  SNAPSHOT_REQ хосту → нам прилетит направленный STATE — тот же механизм, что синк при
+ *  входе. Плюс объясняем пользователю, почему его play/seek «не сработал». */
+function requestGateResync(s: Session): void {
+  const now = Date.now();
+  if (now - s.lastGateResyncAt < GATE_RESYNC_THROTTLE_MS) return;
+  s.lastGateResyncAt = now;
+  sendWire(s, { type: 'MODE', detached: false });
+  notifyEvent(s, 'Управляет хост — плеер выровнен по комнате. Право можно получить кнопкой «Запросить»');
 }
 
 // ── Удалённые сообщения → плеер ──────────────────────────────────────────────

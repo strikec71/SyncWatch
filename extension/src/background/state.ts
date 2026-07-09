@@ -75,6 +75,9 @@ export interface Session {
   /** Per-session реконнект (раньше — модульные let в connection.ts). */
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   reconnectAttempt: number;
+  /** Метка последнего запроса выравнивания после заблокированного гейтом действия
+   *  (комната ≥3, мы не контроллер) — троттлинг, чтобы не спамить снапшотами. */
+  lastGateResyncAt: number;
 }
 
 /** Свежая сессия для вкладки (ещё не подключена). */
@@ -99,6 +102,7 @@ export function createSession(tabId: number): Session {
     lastActivityAt: 0,
     reconnectTimer: null,
     reconnectAttempt: 0,
+    lastGateResyncAt: 0,
   };
 }
 
