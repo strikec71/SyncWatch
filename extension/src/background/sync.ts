@@ -19,7 +19,17 @@ import type {
   PlayerSnapshot,
   RuntimeMessage,
 } from '../shared/messages';
-import { type Session, sendWire, amHost, amController, ECHO_EPSILON, peerName } from './state';
+import {
+  type Session,
+  sendWire,
+  amHost,
+  amController,
+  noteActivity,
+  ECHO_EPSILON,
+  EXPECTED_NAV_TTL_MS,
+  peerName,
+} from './state';
+import { framesWithVideo } from './presence';
 import {
   notifyEvent,
   notePeerPaused,
@@ -56,13 +66,31 @@ export function canEmit(
   return opts.amController;
 }
 
-/** Отметить реальную активность просмотра — сбрасывает таймер авто-дисконнекта по простою.
- *  Зовётся из всех сигналов «за экраном кто-то есть»: локальный beat (играем), событие
- *  плеера (жмут кнопки), входящий STATE/BEAT (партнёр играет/действует). PING/roster сюда
- *  НЕ входят — иначе keepalive не давал бы простою наступить никогда. */
-function noteActivity(s: Session): void {
-  s.lastActivityAt = Date.now();
+/** Cold-start (Фаза 1): в какой фрейм слать get-snapshot. Активный, если он реально
+ *  держит видео; иначе первый фрейм с видео; иначе — активный (пусть промахнётся, чем
+ *  ничего). Фиксит гонку frameId=0 до первого player-event хоста (снимок с фрейма без видео). */
+export function pickSnapshotFrame(activeFrameId: number, framesWithVideo: number[]): number {
+  if (framesWithVideo.includes(activeFrameId)) return activeFrameId;
+  if (framesWithVideo.length > 0) return framesWithVideo[0];
+  return activeFrameId;
 }
+
+/** Cold-start (Фаза 1): слать ли resync (MODE{detached:false}) при готовности <video>.
+ *  Только не-host и не-detached (нельзя выдёргивать из соло), с собственным троттлингом. */
+export function readyResyncDecision(p: {
+  connected: boolean;
+  detached: boolean;
+  amHost: boolean;
+  now: number;
+  lastAt: number;
+  throttleMs: number;
+}): boolean {
+  if (!p.connected || p.detached || p.amHost) return false;
+  return p.now - p.lastAt >= p.throttleMs;
+}
+
+// noteActivity живёт в state.ts (общая точка для sync.ts и nav.ts) — сбрасывает таймер
+// авто-дисконнекта по простою. PING/roster активностью НЕ считаются.
 
 // ── Активный фрейм ────────────────────────────────────────────────────────────
 
@@ -153,12 +181,31 @@ export function onAd(s: Session, msg: AdMsg, frameId: number): void {
 
 // Не чаще раза в 3с: серия seek/ratechange от одного жеста не должна спамить хоста.
 const GATE_RESYNC_THROTTLE_MS = 3000;
+// Cold-start: троттлинг resync по готовности <video> (смена качества дёргает событие часто).
+const READY_RESYNC_THROTTLE_MS = 3000;
+
+/** Cold-start (Фаза 1): фрейм доиграл <video>. Помечаем его активным (если он в
+ *  presence-карте) и, если мы не-host и в синхроне, просим направленный снапшот тем же
+ *  идемпотентным MODE{detached:false} → SNAPSHOT_REQ хосту → STATE в уже готовый плеер. */
+export function onVideoReady(s: Session, frameId: number): void {
+  if (framesWithVideo(s.tabId).includes(frameId)) markActiveFrame(s, frameId);
+  if (!readyResyncDecision({
+    connected: s.connected,
+    detached: s.detached,
+    amHost: amHost(s),
+    now: Date.now(),
+    lastAt: s.lastReadyResyncAt,
+    throttleMs: READY_RESYNC_THROTTLE_MS,
+  })) return;
+  s.lastReadyResyncAt = Date.now();
+  sendWire(s, { type: 'MODE', detached: false });
+}
 
 /** Заблокированное гейтом действие уже исполнилось локально → вернуть себя к состоянию
  *  комнаты. MODE{detached:false} на сервере (уже задеплоенном) идемпотентен и триггерит
  *  SNAPSHOT_REQ хосту → нам прилетит направленный STATE — тот же механизм, что синк при
  *  входе. Плюс объясняем пользователю, почему его play/seek «не сработал». */
-function requestGateResync(s: Session): void {
+export function requestGateResync(s: Session): void {
   const now = Date.now();
   if (now - s.lastGateResyncAt < GATE_RESYNC_THROTTLE_MS) return;
   s.lastGateResyncAt = now;
@@ -172,6 +219,12 @@ export function applyRemoteState(s: Session, state: StateMessage): void {
   noteActivity(s); // партнёр действует → комната активна, простой сбрасываем даже в соло
   if (s.detached) return; // соло: смотрим независимо, чужое не применяем
   if (state.to != null && state.to !== s.myConnId) return; // чужой направленный снапшот
+  // Пока навигируемся по NAV партнёра (страница ИЛИ серия/озвучка) — этот STATE адресован
+  // СТАРОМУ документу/серии. Дропаем: свежий приедет после готовности нового плеера
+  // (video-ready → resync Фазы 1). TTL страхует от залипшего expected (Фазы 2/3).
+  const nowTs = Date.now();
+  if (s.expectedNav && nowTs - s.expectedNavAt < EXPECTED_NAV_TTL_MS) return;
+  if (s.expectedSig && nowTs - s.expectedSigAt < EXPECTED_NAV_TTL_MS) return;
 
   // Снапшот (STATE.to === myConnId, при join/un-detach) применяем тем же путём.
   s.lastSync = { action: state.action, currentTime: state.currentTime };
@@ -212,15 +265,39 @@ export function onRemoteBeat(s: Session, msg: BeatMessage): void {
   });
 }
 
-/** Мы host и сервер попросил снапшот участнику `target`: спросить активный фрейм и
- *  отправить направленный STATE{to:target}. Нет фрейма/снимка — молча пропускаем. */
-export async function pushSnapshot(s: Session, req: SnapshotReqMessage): Promise<void> {
+// Снимок неготового плеера ({paused:true,currentTime:0}) перемотал бы новичка в 0:00 —
+// один повтор через это окно, дальше молча пропускаем (свежий STATE приедет по video-ready).
+const SNAPSHOT_RETRY_MS = 1500;
+
+/** Мы host и сервер попросил снапшот участнику `target`: спросить фрейм с видео и
+ *  отправить направленный STATE{to:target}. Нет фрейма/снимка — молча пропускаем.
+ *  Неготовый снимок (ready:false) отбраковываем и один раз повторяем. */
+export async function pushSnapshot(s: Session, req: SnapshotReqMessage, attempt = 0): Promise<void> {
   if (!amHost(s)) return;
+  // Синхрон страницы (Фаза 2): перед позицией отдаём новичку АДРЕС страницы комнаты
+  // направленным NAV — иначе он остался бы на дефолтной серии (URL плеера её не несёт).
+  // Только раз (attempt===0), только если знаем свою страницу. Он навигируется, а
+  // позиция досинкается после готовности его нового плеера (video-ready → resync).
+  if (attempt === 0 && s.pageUrl) {
+    sendWire(s, { type: 'NAV', scope: 'page', url: s.pageUrl, ts: Date.now(), to: req.target });
+  }
+  // Затем — выбор серии/сезона/озвучки (Фаза 3), чтобы новичок оказался НЕ на дефолтной
+  // серии. Порядок: страница → серия → позиция. Плеер сменит источник на месте, позицию
+  // добьёт resync по video-ready. Это и есть фикс «приглашённый на 1-й серии/дефолтной озвучке».
+  if (attempt === 0 && s.mediaSig) {
+    sendWire(s, { type: 'NAV', scope: 'player', sig: s.mediaSig, ts: Date.now(), to: req.target });
+  }
+  const frameId = pickSnapshotFrame(s.frameId, framesWithVideo(s.tabId));
   try {
     const snap = (await browser.tabs.sendMessage(
-      s.tabId, { kind: 'get-snapshot' }, { frameId: s.frameId },
+      s.tabId, { kind: 'get-snapshot' }, { frameId },
     )) as PlayerSnapshot | undefined;
     if (!snap) return;
+    if (snap.ready === false) {
+      // Плеер новичка/хоста ещё не доиграл метаданные — не шлём мусор в 0:00.
+      if (attempt === 0) setTimeout(() => void pushSnapshot(s, req, 1), SNAPSHOT_RETRY_MS);
+      return;
+    }
     const wire: StateMessage = {
       type: 'STATE',
       action: snap.paused ? 'pause' : 'play',

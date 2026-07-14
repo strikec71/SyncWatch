@@ -23,8 +23,25 @@ export interface ApplyMsg {
 
 /** background → content-скрипт активного фрейма: вернуть текущий снимок плеера. */
 export interface GetSnapshotMsg { kind: 'get-snapshot'; }
-/** Ответ на get-snapshot. */
-export interface PlayerSnapshot { paused: boolean; currentTime: number; rate: number; }
+/** Ответ на get-snapshot. `ready` — плеер доиграл метаданные (иначе снимок = мусор
+ *  {paused:true,currentTime:0}; хаб такой отбраковывает, см. pushSnapshot). */
+export interface PlayerSnapshot { paused: boolean; currentTime: number; rate: number; ready: boolean; }
+
+/** content-скрипт → background: <video> доиграл метаданные (loadedmetadata/canplay).
+ *  Cold-start (Фаза 1): не-хост просит повторный снапшот, когда плеер наконец готов. */
+export interface VideoReadyMsg { kind: 'video-ready'; }
+
+/** content-скрипт (верхний фрейм) → background: текущий URL страницы вкладки (Фаза 2).
+ *  Хаб решает: установить baseline / подтвердить ожидаемую навигацию / транслировать
+ *  партнёрам NAV / выровнять (гейт). Шлётся при загрузке, смене SPA-URL и периодически. */
+export interface NavReportMsg { kind: 'nav-report'; url: string; }
+
+/** content-скрипт (фрейм плеера) → background: текущий выбор серии/сезона/озвучки (Фаза 3).
+ *  `sig` — каноническая подпись (одинакова у всех на одном тайтле), `human` — для ленты. */
+export interface MediaSigMsg { kind: 'media-sig'; sig: string; human: string; }
+
+/** background → content-скрипт активного фрейма: применить выбор серии/озвучки партнёра. */
+export interface MediaApplyMsg { kind: 'media-apply'; sig: string; }
 
 /** content-скрипт → background: показать тост в оверлее (напр. «партнёр на паузе»). */
 export interface NoticeMsg { kind: 'notice'; text: string; }
@@ -140,6 +157,10 @@ export interface StatusMsg {
 export type RuntimeMessage =
   | PlayerEventMsg
   | ApplyMsg
+  | VideoReadyMsg
+  | NavReportMsg
+  | MediaSigMsg
+  | MediaApplyMsg
   | BufferingMsg
   | BeatMsg
   | BufferControlMsg

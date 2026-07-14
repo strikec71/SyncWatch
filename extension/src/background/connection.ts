@@ -11,6 +11,7 @@ import type {
   BufferMessage,
   BeatMessage,
   AdMessage,
+  NavMessage,
   SnapshotReqMessage,
   RosterMessage,
   RequestControlMessage,
@@ -42,6 +43,7 @@ import {
   onRemoteBeat,
   pushSnapshot,
 } from './sync';
+import { applyRemoteNav } from './nav';
 
 /** Чистый расчёт задержки реконнекта: min(CAP, BASE·2^attempt) + джиттер (Фаза A). */
 export function computeBackoff(attempt: number, rand: number = Math.random()): number {
@@ -229,6 +231,9 @@ function onWire(s: Session, raw: unknown): void {
       break;
     case 'BEAT':
       onRemoteBeat(s, msg as BeatMessage);
+      break;
+    case 'NAV':
+      applyRemoteNav(s, msg as NavMessage);
       break;
     case 'SNAPSHOT_REQ':
       void pushSnapshot(s, msg as SnapshotReqMessage);

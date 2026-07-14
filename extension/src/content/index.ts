@@ -5,6 +5,7 @@ import browser from '../shared/browser';
 import { PlayerController } from './player';
 import { StatusBanner } from './banner';
 import { handleInvite } from './invite';
+import { startNavSync } from './navsync';
 import { Overlay } from './overlay';
 import { loadSettings } from '../shared/settings';
 import type { RuntimeMessage } from '../shared/messages';
@@ -14,6 +15,10 @@ controller.start();
 
 // Инвайт-ссылка (Фаза 4): если в хэше есть room-код — сохраняем и подключаемся.
 handleInvite();
+
+// Синхрон URL страницы (Фаза 2): репорт адреса вкладки в хаб. СТРОГО после handleInvite()
+// (тот срезает инвайт-хэш) — иначе baseline мог бы уехать на /join.
+startNavSync();
 
 // Центральный статус-баннер (Фаза 7): только верхний фрейм, независимо от островка.
 const banner = window.top === window ? new StatusBanner() : null;
@@ -72,6 +77,9 @@ browser.runtime.onMessage.addListener((msg: RuntimeMessage, _sender, sendRespons
       break;
     case 'ad-control':
       controller.applyAdControl(msg.ad);
+      break;
+    case 'media-apply':
+      controller.applyMediaSelection(msg.sig); // синхрон серии/озвучки (Фаза 3)
       break;
     case 'banner':
       banner?.apply(msg); // центральный статус-баннер — только верхний фрейм (Фаза 7)

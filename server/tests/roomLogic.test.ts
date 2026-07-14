@@ -7,6 +7,7 @@ import {
   electHost,
   shapeRoster,
   canSendState,
+  canNavigate,
   decide,
 } from '../src/roomLogic';
 import type { PeerState } from '../src/roomLogic';
@@ -120,6 +121,19 @@ describe('canSendState — permission matrix', () => {
   });
 });
 
+describe('canNavigate — NAV gate (no pause exception)', () => {
+  it('allows anyone in a room of ≤2', () => {
+    for (const size of [0, 1, 2]) expect(canNavigate(size, false, false)).toBe(true);
+  });
+
+  it('in a room of ≥3, allows only host or controller', () => {
+    expect(canNavigate(3, false, false)).toBe(false);
+    expect(canNavigate(3, true, false)).toBe(true);
+    expect(canNavigate(3, false, true)).toBe(true);
+    expect(canNavigate(10, false, false)).toBe(false);
+  });
+});
+
 describe('decide — relay decision', () => {
   it('consumes PING/JOIN/MODE (handled statefully in room.ts, never relayed)', () => {
     for (const type of ['PING', 'JOIN', 'MODE'] as const) {
@@ -177,6 +191,25 @@ describe('decide — relay decision', () => {
     expect(decide(req, peer(4), 3)).toEqual({ kind: 'toHost', target: 4 });
     // The host asking itself → drop (no one to ask).
     expect(decide(req, peer(1, { isHost: true }), 3).kind).toBe('drop');
+  });
+
+  it('broadcasts NAV from anyone in ≤2, gates it on host/control in ≥3 (no pause exception)', () => {
+    const nav = { type: 'NAV', scope: 'page', url: 'https://a/2', ts: 1 } as WireMessage;
+    expect(decide(nav, peer(1), 2)).toEqual({ kind: 'broadcast', inject: true });
+    expect(decide(nav, peer(2), 3).kind).toBe('drop'); // plain peer in ≥3
+    expect(decide(nav, peer(1, { isHost: true }), 3)).toEqual({ kind: 'broadcast', inject: true });
+    expect(decide(nav, peer(2, { hasControl: true }), 3)).toEqual({ kind: 'broadcast', inject: true });
+  });
+
+  it('drops NAV from a detached sender', () => {
+    const nav = { type: 'NAV', scope: 'page', url: 'https://a/2', ts: 1 } as WireMessage;
+    expect(decide(nav, peer(1, { detached: true }), 2).kind).toBe('drop');
+  });
+
+  it('routes directed NAV (snapshot) only from host, to the target', () => {
+    const nav = { type: 'NAV', scope: 'page', url: 'https://a/2', ts: 1, to: 4 } as WireMessage;
+    expect(decide(nav, peer(1, { isHost: true }), 3)).toEqual({ kind: 'directed', target: 4, inject: true });
+    expect(decide(nav, peer(2), 3).kind).toBe('drop'); // non-host cannot direct-send
   });
 
   it('drops server→client message types appearing in the inbound stream', () => {

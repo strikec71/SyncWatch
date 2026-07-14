@@ -60,6 +60,16 @@ export function canSendState(
   return isHost || hasControl || action === 'pause';
 }
 
+/**
+ * NAV-гейт (синхрон идентичности контента, Фаза 2/3). Как canSendState, НО без
+ * safety-исключения паузы: навигация не «безопасна для всех» — заблудить комнату на
+ * чужую серию хуже, чем не пустить. ≤2 → любой; ≥3 → только host/controller.
+ */
+export function canNavigate(size: number, isHost: boolean, hasControl: boolean): boolean {
+  if (size <= 2) return true;
+  return isHost || hasControl;
+}
+
 /** Что сделать с входящим сообщением. Side-effects (ROSTER, снапшоты) — в room.ts. */
 export type RelayDecision =
   | { kind: 'drop' }
@@ -103,6 +113,16 @@ export function decide(msg: WireMessage, sender: PeerState, size: number): Relay
     case 'BUFFER':
     case 'AD':
       return sender.detached ? { kind: 'drop' } : { kind: 'broadcast', inject: true };
+
+    case 'NAV':
+      if (msg.to !== undefined) {
+        // Направленный NAV (снапшот новичку) — только host, только адресату.
+        return sender.isHost ? { kind: 'directed', target: msg.to, inject: true } : { kind: 'drop' };
+      }
+      if (sender.detached) return { kind: 'drop' }; // соло не навигирует комнату
+      return canNavigate(size, sender.isHost, sender.hasControl)
+        ? { kind: 'broadcast', inject: true }
+        : { kind: 'drop' };
 
     case 'REQUEST_CONTROL':
       // host сам себе право не просит; без host — некому. Иначе направляем host'у,

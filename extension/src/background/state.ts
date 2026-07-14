@@ -28,6 +28,12 @@ export const WATCHDOG_SILENCE_MS = 45000;
 // и НЕ реконнектит) и от lastRecvAt (тот дёргает PING/roster — здесь не считается активностью).
 export const IDLE_DISCONNECT_MS = 90 * 60 * 1000; // 1,5 часа
 
+// Синхрон идентичности контента (Фаза 2/3): пока мы навигируем по NAV партнёра, входящий
+// STATE адресован СТАРОМУ документу — дропаем его столько после старта навигации. Свежий
+// STATE приедет уже после готовности нового плеера (video-ready → resync Фазы 1). TTL
+// одновременно защищает от «залипшего» expectedNav, если tabs.update не сработал.
+export const EXPECTED_NAV_TTL_MS = 20000;
+
 /** Блокирующее состояние одного участника — вход для центрального баннера (Фаза 7). */
 export interface PeerBlock {
   paused: boolean;
@@ -78,6 +84,34 @@ export interface Session {
   /** Метка последнего запроса выравнивания после заблокированного гейтом действия
    *  (комната ≥3, мы не контроллер) — троттлинг, чтобы не спамить снапшотами. */
   lastGateResyncAt: number;
+  /** Метка последнего resync по готовности <video> (cold-start, Фаза 1). Свой троттлинг,
+   *  НЕ делим с lastGateResyncAt — это разные события. */
+  lastReadyResyncAt: number;
+  /** Синхрон URL страницы (Фаза 2): базовый (последний известный) адрес страницы комнаты,
+   *  '' до первого репорта. Первый репорт НИКОГДА не транслируем (иначе /join-приглашённый
+   *  уволок бы комнату на /join) — только устанавливаем baseline. */
+  pageUrl: string;
+  /** URL, на который мы СЕЙЧАС навигируемся по NAV партнёра (луп-гард): свой ре-репорт с
+   *  этим url подтверждаем, не транслируем; входящий STATE дропаем до готовности. null = не навигируемся. */
+  expectedNav: string | null;
+  expectedNavAt: number; // Date.now() старта навигации — TTL против залипания (EXPECTED_NAV_TTL_MS)
+  /** Когда мы в последний раз САМИ отправили NAV — окно разбора перекрёстных навигаций. */
+  lastNavSentAt: number;
+  /** Синхрон серии/озвучки внутри плеера (Фаза 3), scope:'player'. Зеркалит pageUrl-машину:
+   *  mediaSig — базовый (последний известный) выбор, '' до первого репорта; expectedSig/At —
+   *  выбор, который сейчас применяем по NAV партнёра (луп-гард + дроп STATE); lastSigSentAt —
+   *  окно перекрёстных смен (отдельно от lastNavSentAt, чтобы смена страницы не глушила смену серии). */
+  mediaSig: string;
+  expectedSig: string | null;
+  expectedSigAt: number;
+  lastSigSentAt: number;
+}
+
+/** Отметить реальную активность просмотра (сброс таймера авто-дисконнекта по простою).
+ *  Живёт здесь, чтобы и sync.ts, и nav.ts звали одну функцию. НЕ считается активностью
+ *  keepalive PING/roster (см. lastActivityAt vs lastRecvAt). */
+export function noteActivity(s: Session): void {
+  s.lastActivityAt = Date.now();
 }
 
 /** Свежая сессия для вкладки (ещё не подключена). */
@@ -103,6 +137,15 @@ export function createSession(tabId: number): Session {
     reconnectTimer: null,
     reconnectAttempt: 0,
     lastGateResyncAt: 0,
+    lastReadyResyncAt: 0,
+    pageUrl: '',
+    expectedNav: null,
+    expectedNavAt: 0,
+    lastNavSentAt: 0,
+    mediaSig: '',
+    expectedSig: null,
+    expectedSigAt: 0,
+    lastSigSentAt: 0,
   };
 }
 

@@ -27,6 +27,15 @@ export function queryVideoAvailable(tabId: number): boolean {
   return false;
 }
 
+/** frameId всех фреймов вкладки, где сейчас есть <video> (для выбора фрейма снапшота). */
+export function framesWithVideo(tabId: number): number[] {
+  const frames = tabs.get(tabId);
+  if (!frames) return [];
+  const out: number[] = [];
+  for (const [frameId, present] of frames) if (present) out.push(frameId);
+  return out;
+}
+
 /** Фрейм сообщил своё присутствие видео. Обновляем карту и, при смене доступности
  *  по вкладке, пушим в островок (frame 0). Появление — сразу, пропадание — с дебаунсом. */
 export function onVideoPresence(tabId: number, frameId: number, present: boolean): void {
@@ -59,6 +68,17 @@ function pushAvailability(tabId: number, available: boolean): void {
   lastPushed.set(tabId, available);
   const msg: VideoAvailabilityMsg = { kind: 'video-availability', available };
   browser.tabs.sendMessage(tabId, msg, { frameId: 0 }).catch(() => { /* фрейм ещё не готов/закрыт */ });
+}
+
+/** Вкладка НАВИГИРУЕТСЯ на новый документ (Фаза 2): старые фреймы (кросс-доменные iframe
+ *  прежней серии/страницы) вот-вот умрут, но webNavigation мы не слушаем — карта копила бы
+ *  мёртвые frameId (островок висел бы на странице без видео; снапшот целился бы в дохлый
+ *  фрейм). Чистим карту фреймов и absence-таймер; новый документ отрепортит присутствие
+ *  заново. `lastPushed` НЕ трогаем — пуш доступности пойдёт на реальную смену. */
+export function resetTabFrames(tabId: number): void {
+  tabs.delete(tabId);
+  const t = absenceTimers.get(tabId);
+  if (t != null) { clearTimeout(t); absenceTimers.delete(tabId); }
 }
 
 /** Вкладка закрыта — вычищаем всё её состояние. */

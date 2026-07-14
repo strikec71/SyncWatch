@@ -268,8 +268,53 @@ content (фрейм с <video>) → background (хаб, WS) → DO Room → back
 - **Соло/Синхрон:** участник может временно выйти из синхрона (смотреть один) и
   вернуться — при возврате получает снимок состояния.
 
+### Синхрон контента (NAV) — серии/озвучки/страница (Фазы 2–3, cold-start)
+
+Синхрон play/pause/seek/rate предполагает, что все УЖЕ на одном контенте. На аниме-сайтах
+с выбором серий/сезонов/озвучек это не так — добавлен **синхрон идентичности контента**
+поверх того же WebSocket (`NAV`-сообщение, `scope:'page'|'player'`). Основной модуль —
+`background/nav.ts` (ядро — чистые функции; тесты `tests/nav.test.ts`, `tests/kodik.test.ts`).
+
+- **`scope:'page'` (Фаза 2, `content/navsync.ts`).** Верхний фрейм репортит URL вкладки
+  (`nav-report`); хаб ведёт `session.pageUrl` (baseline) и транслирует навигацию партнёрам.
+  Входящий `NAV` → `browser.tabs.update`. Для сайтов, где серия — это отдельный адрес.
+- **`scope:'player'` (Фаза 3, `content/adapters.ts` адаптер `KODIK`).** jut-su.net и др.
+  грузят **Kodik/Alloha-балансер в кросс-доменный iframe**; серия/сезон/озвучка меняются
+  ВНУТРИ него сменой источника **без смены URL**. Наш content-script работает и в этом
+  iframe (all_frames), поэтому адаптер `getSelection`/`applySelection` читает и **драйвит
+  родные `<select>` Kodik** (`.serial-seasons/series/translations-box select`): выставляет
+  `value` + диспатчит нативный `change` — Kodik сам меняет источник на месте. Подпись выбора
+  `sig="kodik|s=<сезон>|e=<серия>|t=<id-озвучки>"` (числа/id — одинаковы у всех на одном
+  тайтле; per-machine хэши НЕ входят). Репорт `media-sig` идёт из ФРЕЙМА ПЛЕЕРА (не обяз.
+  frame 0). Детали живого Kodik — в memory `syncwatch-kodik-player`.
+- **Одна машина решений на оба scope.** `onNavReportDecision` (локальный репорт →
+  `set-baseline|confirm-expected|ignore|gate-blocked|broadcast`) и `onIncomingNavDecision`
+  (входящий → `navigate|ignore`) работают над абстрактными строками: для page — `pageUrl`,
+  для player — `mediaSig`. Инварианты:
+  1. **ПЕРВЫЙ репорт НИКОГДА не транслируем** (`baseline===''`→`set-baseline`). Иначе
+     приглашённый с `/join` (или новичок на дефолтной серии) уволок бы всю комнату к себе.
+  2. **Перекрёстные NAV разбираем по host-приоритету, НИКОГДА по `ts`** (кросс-машинные
+     часы рассинхронны — тот же запрет, что в коррекции дрейфа; окно — `lastNavSentAt`/
+     `lastSigSentAt`, раздельные, чтобы смена страницы и смена серии не глушили друг друга).
+  3. **Порядок в снапшоте новичку:** `NAV{page}` → `NAV{player}` → `STATE` (`pushSnapshot`).
+     Это и есть фикс «приглашённый на дефолтной серии/озвучке».
+  4. **Пока идёт навигация (`expectedNav`/`expectedSig`, TTL 20с) — STATE дропаем** (он
+     адресован старому документу/серии). Свежую позицию добивает **cold-start-resync
+     Фазы 1** (`video-ready`→`MODE{detached:false}`→повторный снапшот в уже готовый плеер).
+- **Гейт ≥3.** Не-контроллер переключил страницу/серию — уже ушёл локально; `gate-blocked`
+  → `requestGateResync` вернёт его к состоянию комнаты. `canNavigate` (клиент+сервер) БЕЗ
+  safety-исключения паузы (в отличие от `canSendState`).
+- **Cold-start (Фаза 1, `player.ts`).** Любая синхро-навигация приводит партнёра в «холодное»
+  состояние (плеер 00:00 до ▶). `applyRemote` не дропает команду до готовности `<video>`, а
+  откладывает (`pendingApply`); `loadedmetadata/canplay`→`onReady` шлёт `video-ready` и
+  доигрывает; отказ автоплея → жест-фолбэк. `PlayerSnapshot.ready` отбраковывает мусорный
+  снимок неготового плеера. **Деплой: сервер первым** (старый клиент мягко игнорит `NAV`).
+
 Дальше (опционально):
-- Новые адаптеры в `adapters.ts` (включая `isAd` для не-YouTube плееров).
+- Новые адаптеры в `adapters.ts` (`getSelection`/`applySelection` для не-Kodik плееров;
+  `isAd` для не-YouTube). Firefox: `browser.tabs.update` для page-NAV требует выданных
+  optional host-permissions на целевом домене — иначе content-script на новой странице не
+  поднимется (page-scope деградирует; player-scope внутри iframe не затронут).
 - Возможное расширение лимита участников выше 10.
 
 ## Кросс-браузерность

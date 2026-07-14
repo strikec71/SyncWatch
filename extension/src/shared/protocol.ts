@@ -95,6 +95,21 @@ export interface AdMessage {
   from?: number;
 }
 
+/** Синхрон идентичности контента (Фаза 2/3). `scope:'page'` — URL страницы вкладки
+ *  (аниме-сайты меняют серию сменой адреса, напр. jut.su); `scope:'player'` — выбор
+ *  внутри плеера без смены URL (Kodik: серия/сезон/озвучка в `sig`). Направленный `to`
+ *  (host→новичку в снапшоте) выставляет клиент; `from` вставляет сервер при релее.
+ *  Одно из `url`/`sig` по scope: page → `url` (≤2048), player → `sig` (≤512). */
+export interface NavMessage {
+  type: 'NAV';
+  scope: 'page' | 'player';
+  url?: string;
+  sig?: string;
+  ts: number;
+  to?: number;
+  from?: number;
+}
+
 /** guest → server: «прошу право управления». Сервер релеит ТОЛЬКО текущему host,
  *  вставляя `from` = connId просителя. Host решает (жмёт CONTROL grant на его строке). */
 export interface RequestControlMessage {
@@ -117,6 +132,7 @@ export type ClientMessage =
   | BufferMessage
   | BeatMessage
   | AdMessage
+  | NavMessage
   | PingMessage;
 
 export type ServerMessage =
@@ -126,7 +142,8 @@ export type ServerMessage =
   | RequestControlMessage
   | BufferMessage
   | BeatMessage
-  | AdMessage;
+  | AdMessage
+  | NavMessage;
 
 export type WireMessage = ClientMessage | ServerMessage;
 
@@ -268,6 +285,28 @@ export function parseWire(raw: unknown): WireMessage | null {
             ...(obj.from !== undefined ? { from: obj.from as number } : {}),
           }
         : null;
+
+    case 'NAV': {
+      // scope из allowlist; page → url (≤2048), player → sig (≤512). Схему http/https
+      // проверяют И сервер (decide), И клиент при применении (normalizeSyncUrl). Строим
+      // объект строго по scope — лишнее поле другого scope не проносим.
+      if ((obj.scope !== 'page' && obj.scope !== 'player') || !isNum(obj.ts) || !optInt(obj.to) || !optInt(obj.from)) {
+        return null;
+      }
+      const tail = {
+        ts: obj.ts,
+        ...(obj.to !== undefined ? { to: obj.to as number } : {}),
+        ...(obj.from !== undefined ? { from: obj.from as number } : {}),
+      };
+      if (obj.scope === 'page') {
+        return isStr(obj.url) && obj.url.length <= 2048
+          ? { type: 'NAV', scope: 'page', url: obj.url, ...tail }
+          : null;
+      }
+      return isStr(obj.sig) && obj.sig.length <= 512
+        ? { type: 'NAV', scope: 'player', sig: obj.sig, ...tail }
+        : null;
+    }
 
     case 'REQUEST_CONTROL':
       return optInt(obj.from)

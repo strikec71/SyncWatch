@@ -20,8 +20,11 @@ import {
   type PeerBlock,
 } from '../src/background/state';
 import { computeBackoff, reconnectDecision } from '../src/background/connection';
-import { isEcho, canEmit } from '../src/background/sync';
+import { isEcho, canEmit, pickSnapshotFrame, readyResyncDecision, onVideoReady } from '../src/background/sync';
 import { diffRoster, aggregateBanner } from '../src/background/roster';
+import { onVideoPresence, forgetTab } from '../src/background/presence';
+import { createSession } from '../src/background/state';
+import { shouldDeferApply } from '../src/content/player';
 import type { RosterPeer } from '../src/shared/protocol';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -211,6 +214,101 @@ describe('canEmit', () => {
     expect(canEmit('seek', { amController: true, detached: false, size: 5 })).toBe(true);
     expect(canEmit('seek', { amController: false, detached: false, size: 5 })).toBe(false);
     expect(canEmit('pause', { amController: false, detached: false, size: 5 })).toBe(true);
+  });
+});
+
+// ── Cold-start (Фаза 1): shouldDeferApply / pickSnapshotFrame / readyResyncDecision ──
+
+describe('shouldDeferApply', () => {
+  it('откладывает, если нет <video>', () => {
+    expect(shouldDeferApply({ hasVideo: false, readyState: 4, durationFinite: true })).toBe(true);
+  });
+  it('откладывает, пока нет метаданных (readyState < 1)', () => {
+    expect(shouldDeferApply({ hasVideo: true, readyState: 0, durationFinite: true })).toBe(true);
+  });
+  it('откладывает при бесконечной длительности (HLS/live ещё не готов)', () => {
+    expect(shouldDeferApply({ hasVideo: true, readyState: 1, durationFinite: false })).toBe(true);
+  });
+  it('применяет сразу, когда видео есть и метаданные доиграны', () => {
+    expect(shouldDeferApply({ hasVideo: true, readyState: 1, durationFinite: true })).toBe(false);
+    expect(shouldDeferApply({ hasVideo: true, readyState: 4, durationFinite: true })).toBe(false);
+  });
+});
+
+describe('pickSnapshotFrame', () => {
+  it('оставляет активный фрейм, если он держит видео', () => {
+    expect(pickSnapshotFrame(3, [0, 3])).toBe(3);
+  });
+  it('берёт первый фрейм с видео, если активный без видео (гонка frameId=0)', () => {
+    expect(pickSnapshotFrame(0, [5])).toBe(5);
+  });
+  it('откатывается к активному, если ни один фрейм видео не держит', () => {
+    expect(pickSnapshotFrame(2, [])).toBe(2);
+  });
+});
+
+describe('readyResyncDecision', () => {
+  const base = { connected: true, detached: false, amHost: false, now: 10_000, lastAt: 0, throttleMs: 3000 };
+  it('шлёт resync у не-host в синхроне после троттлинга', () => {
+    expect(readyResyncDecision(base)).toBe(true);
+  });
+  it('не шлёт у host (он источник, себя не выравнивает)', () => {
+    expect(readyResyncDecision({ ...base, amHost: true })).toBe(false);
+  });
+  it('не шлёт в соло (нельзя выдёргивать из detached)', () => {
+    expect(readyResyncDecision({ ...base, detached: true })).toBe(false);
+  });
+  it('не шлёт без соединения', () => {
+    expect(readyResyncDecision({ ...base, connected: false })).toBe(false);
+  });
+  it('дросселирует чаще троттлинга', () => {
+    expect(readyResyncDecision({ ...base, now: 2000, lastAt: 0 })).toBe(false);
+    expect(readyResyncDecision({ ...base, now: 3000, lastAt: 0 })).toBe(true);
+  });
+});
+
+// ── onVideoReady: side-effect (MODE resync + markActiveFrame) ─────────────────
+
+describe('onVideoReady', () => {
+  const TAB = 900;
+  function connectedSession(over: Partial<RosterPeer> = {}) {
+    const s = createSession(TAB);
+    s.connected = true;
+    s.myConnId = 2;
+    s.roster = rosterMap(rp(1, { isHost: true }), rp(2, over));
+    const sent: string[] = [];
+    s.ws = { send: (d: string) => sent.push(d) } as unknown as WebSocket;
+    return { s, sent };
+  }
+
+  it('не-host в синхроне: шлёт MODE{detached:false} и метит активный фрейм', () => {
+    forgetTab(TAB);
+    onVideoPresence(TAB, 7, true); // фрейм 7 держит видео
+    const { s, sent } = connectedSession();
+    onVideoReady(s, 7);
+    expect(s.frameId).toBe(7);
+    expect(sent.map((d) => JSON.parse(d))).toContainEqual({ type: 'MODE', detached: false });
+    forgetTab(TAB);
+  });
+
+  it('host: не шлёт resync (host — источник снапшота)', () => {
+    forgetTab(TAB);
+    onVideoPresence(TAB, 7, true);
+    const { s, sent } = connectedSession();
+    s.myConnId = 1; // теперь мы host (rp(1,isHost))
+    onVideoReady(s, 7);
+    expect(sent).toEqual([]);
+    forgetTab(TAB);
+  });
+
+  it('detached: не шлёт resync (соло)', () => {
+    forgetTab(TAB);
+    onVideoPresence(TAB, 7, true);
+    const { s, sent } = connectedSession();
+    s.detached = true;
+    onVideoReady(s, 7);
+    expect(sent).toEqual([]);
+    forgetTab(TAB);
   });
 });
 

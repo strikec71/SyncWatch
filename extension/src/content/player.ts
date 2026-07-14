@@ -3,8 +3,26 @@
 
 import browser from '../shared/browser';
 import type { PlayerAction } from '../shared/protocol';
-import type { PlayerEventMsg, BufferingMsg, BeatMsg, AdMsg, PlayerSnapshot, VideoPresenceMsg } from '../shared/messages';
+import type {
+  PlayerEventMsg,
+  BufferingMsg,
+  BeatMsg,
+  AdMsg,
+  PlayerSnapshot,
+  VideoPresenceMsg,
+  VideoReadyMsg,
+  MediaSigMsg,
+  NoticeMsg,
+} from '../shared/messages';
 import { findAdapter, queryVideosDeep } from './adapters';
+
+/** Cold-start: отложенная команда, пока <video> ещё не готов (балансеры создают его
+ *  лениво). readyState<1 или бесконечная duration → метаданных нет, применять некуда. */
+export function shouldDeferApply(p: { hasVideo: boolean; readyState: number; durationFinite: boolean }): boolean {
+  return !p.hasVideo || p.readyState < 1 || !p.durationFinite;
+}
+
+interface PendingApply { action: PlayerAction; currentTime: number; rate?: number; paused: boolean; }
 
 const AD_POLL_MS = 500; // как часто проверяем состояние рекламы
 const PRESENCE_REASSERT_MS = 4000; // ре-репорт «видео есть» — восстановление после выгрузки SW
@@ -30,6 +48,10 @@ export class PlayerController {
   private lastLocalActionTs = 0;      // когда мы сами play/pause/seek — защита от отката дрейфом
   private hasVideo = false;           // есть ли в этом фрейме <video> (для гейтинга островка)
   private presenceReported = false;   // отправляли ли хотя бы раз статус присутствия
+  private pendingApply: PendingApply | null = null; // отложенная команда до готовности <video> (Фаза 1)
+  private awaitingGesture = false;    // автоплей заблокирован — ждём клик/клавишу, чтобы доиграть play (Фаза 1)
+  private readySent = false;          // отправляли ли video-ready для ТЕКУЩЕГО элемента (раз на элемент)
+  private lastSigReported: string | null = null; // последняя отправленная подпись серии/озвучки (Фаза 3)
 
   start(): void {
     this.scan();
@@ -86,6 +108,26 @@ export class PlayerController {
     // Присутствие видео для гейтинга островка. Подмена <video> всегда даёт непустого
     // кандидата → не мигаем; `false` уходит только когда видео реально нет во фрейме.
     this.updatePresence(candidate != null);
+    // Синхрон серии/озвучки (Фаза 3): репорт подписи выбора при смене (только сайты с адаптером).
+    this.checkMediaSig();
+  }
+
+  /** Если у фрейма есть адаптер с выбором серии/сезона/озвучки — сообщаем хабу подпись
+   *  при её смене. Дженерик-фолбэка нет: только явные адаптеры (Kodik), иначе синхронить нечего. */
+  private checkMediaSig(): void {
+    const adapter = findAdapter(location.hostname, document);
+    const sel = adapter?.getSelection?.(document) ?? null;
+    if (!sel || sel.sig === this.lastSigReported) return;
+    this.lastSigReported = sel.sig;
+    const msg: MediaSigMsg = { kind: 'media-sig', sig: sel.sig, human: sel.human };
+    browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
+  }
+
+  /** Применить выбор серии/озвучки партнёра: драйвим родной UI плеера через адаптер.
+   *  Он сам сменит источник → checkMediaSig затем отрепортит новое состояние (хаб подтвердит). */
+  applyMediaSelection(sig: string): void {
+    const adapter = findAdapter(location.hostname, document);
+    adapter?.applySelection?.(sig, document);
   }
 
   private pickActiveVideo(): HTMLVideoElement | null {
@@ -119,6 +161,7 @@ export class PlayerController {
     if (this.isBuffering) this.setBuffering(false);
     this.detach();
     this.video = video;
+    this.readySent = false; // новый элемент — video-ready отправим заново
     video.addEventListener('play', this.onPlay);
     video.addEventListener('pause', this.onPause);
     video.addEventListener('seeked', this.onSeeked);
@@ -126,6 +169,12 @@ export class PlayerController {
     video.addEventListener('waiting', this.onWaiting);
     video.addEventListener('stalled', this.onWaiting);
     video.addEventListener('playing', this.onPlaying);
+    // Cold-start (Фаза 1): дождаться метаданных, чтобы доиграть отложенную команду и
+    // сообщить хабу о готовности. Если элемент уже готов — дёргаем onReady сразу.
+    video.addEventListener('loadedmetadata', this.onReady);
+    video.addEventListener('canplay', this.onReady);
+    video.addEventListener('durationchange', this.onReady);
+    if (video.readyState >= 1 && Number.isFinite(video.duration)) this.onReady();
   }
 
   private detach(): void {
@@ -137,8 +186,28 @@ export class PlayerController {
     this.video.removeEventListener('waiting', this.onWaiting);
     this.video.removeEventListener('stalled', this.onWaiting);
     this.video.removeEventListener('playing', this.onPlaying);
+    this.video.removeEventListener('loadedmetadata', this.onReady);
+    this.video.removeEventListener('canplay', this.onReady);
+    this.video.removeEventListener('durationchange', this.onReady);
     this.video = null;
   }
+
+  /** <video> доиграл метаданные: раз на элемент шлём video-ready хабу и доигрываем
+   *  отложенную команду (если была). Гейт по readyState/duration — против ложных срабатываний. */
+  private onReady = () => {
+    const v = this.video;
+    if (!v || v.readyState < 1 || !Number.isFinite(v.duration)) return;
+    if (!this.readySent) {
+      this.readySent = true;
+      const msg: VideoReadyMsg = { kind: 'video-ready' };
+      browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
+    }
+    if (this.pendingApply) {
+      const p = this.pendingApply;
+      this.pendingApply = null;
+      this.applyRemote(p.action, p.currentTime, p.paused, p.rate);
+    }
+  };
 
   /** Транслировать локальное действие в background (если оно не вызвано сетью или рекламой). */
   private emit(action: PlayerAction): void {
@@ -166,13 +235,15 @@ export class PlayerController {
     return this.pausedByPeerBuffer || this.pausedByPeerAd || this.isAdActive;
   }
 
-  /** Текущий снимок для синка новичка при входе (запрос get-snapshot от хаба). */
+  /** Текущий снимок для синка новичка при входе (запрос get-snapshot от хаба).
+   *  `ready:false` (плеер ещё не доиграл метаданные) → хаб отбракует мусорный снимок. */
   snapshot(): PlayerSnapshot {
     const v = this.video;
     return {
       paused: v?.paused ?? true,
       currentTime: v?.currentTime ?? 0,
       rate: v?.playbackRate ?? 1,
+      ready: !!v && v.readyState >= 1 && Number.isFinite(v.duration),
     };
   }
 
@@ -231,9 +302,15 @@ export class PlayerController {
 
   /** Применить удалённую команду (last-writer-wins), не порождая эхо (флаг isApplyingRemote).
    *  Технический холд буфера/рекламы партнёра имеет приоритет — сквозь него не играем. */
-  applyRemote(action: PlayerAction, currentTime: number, _paused: boolean, rate?: number): void {
+  applyRemote(action: PlayerAction, currentTime: number, paused: boolean, rate?: number): void {
     if (!this.video) this.scan();
     const v = this.video;
+    // Cold-start (Фаза 1): плеер ещё не готов (нет <video>/метаданных) — не дропаем
+    // команду, а откладываем; onReady доиграет её, когда балансер создаст и дозагрузит видео.
+    if (shouldDeferApply({ hasVideo: !!v, readyState: v?.readyState ?? 0, durationFinite: v ? Number.isFinite(v.duration) : false })) {
+      this.pendingApply = { action, currentTime, rate, paused };
+      return;
+    }
     if (!v) return;
 
     this.isApplyingRemote = true;
@@ -244,11 +321,38 @@ export class PlayerController {
       }
       if (action === 'rate' && rate) v.playbackRate = rate;
       // Воспроизведение: последнее слово за отправителем, но не играем сквозь холд.
-      if (action === 'play' && !this.heldByPeer()) void v.play().catch(() => { /* автоплей заблокирован */ });
+      if (action === 'play' && !this.heldByPeer()) this.tryPlay(v);
       else if (action === 'pause') v.pause();
     } finally {
       this.releaseSoon();
     }
+  }
+
+  /** Попытка воспроизведения с обработкой отказа автоплея (Фаза 1). Голый catch
+   *  раньше глотал отказ → позиция вставала, но play молча не срабатывал. */
+  private tryPlay(v: HTMLVideoElement): void {
+    void v.play().catch(() => this.onAutoplayBlocked());
+  }
+
+  /** Автоплей заблокирован политикой браузера: тост + разовые слушатели жеста
+   *  (клик/клавиша) на документе → повторить play, когда пользователь взаимодействует. */
+  private onAutoplayBlocked(): void {
+    if (this.awaitingGesture) return;
+    this.awaitingGesture = true;
+    const msg: NoticeMsg = {
+      kind: 'notice',
+      text: 'Автовоспроизведение заблокировано — кликните по странице или нажмите ▶',
+    };
+    browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
+    const retry = () => {
+      document.removeEventListener('pointerdown', retry, true);
+      document.removeEventListener('keydown', retry, true);
+      this.awaitingGesture = false;
+      const v = this.video;
+      if (v && v.paused && !this.heldByPeer()) void v.play().catch(() => { /* всё ещё нельзя */ });
+    };
+    document.addEventListener('pointerdown', retry, { once: true, capture: true });
+    document.addEventListener('keydown', retry, { once: true, capture: true });
   }
 
   /** Партнёр буферизуется — встаём; возобновился — играем (если нет других холдов) (Фаза 2). */
@@ -274,7 +378,7 @@ export class PlayerController {
     this.isApplyingRemote = true;
     try {
       if (held) v.pause();
-      else void v.play().catch(() => { /* автоплей заблокирован */ });
+      else this.tryPlay(v); // снятие холда: play с жест-фолбэком при блоке автоплея
     } finally {
       this.releaseSoon();
     }

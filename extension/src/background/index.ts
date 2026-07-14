@@ -29,7 +29,8 @@ import {
   RECONNECT_ALARM,
 } from './state';
 import { connect, disconnect, cancelReconnect, checkWatchdog, checkIdle, reconnectTick } from './connection';
-import { onPlayerEvent, onBuffering, onBeat, onAd } from './sync';
+import { onPlayerEvent, onBuffering, onBeat, onAd, onVideoReady } from './sync';
+import { onNavReport, onMediaSig } from './nav';
 import { notifyEvent, notifyPopup, statusSnapshot } from './roster';
 import { onVideoPresence, queryVideoAvailable, forgetTab } from './presence';
 
@@ -65,6 +66,22 @@ browser.runtime.onMessage.addListener(
         return;
       case 'player-event':
         if (tabId != null) onPlayerEvent(getSession(tabId), msg, frameId);
+        return;
+      case 'video-ready':
+        // Cold-start (Фаза 1): плеер фрейма доиграл метаданные — маркируем активный фрейм
+        // и (не-host, в синхроне) просим направленный снапшот в уже готовый плеер.
+        if (tabId != null) onVideoReady(getSession(tabId), frameId);
+        return;
+      case 'nav-report':
+        // Синхрон URL страницы (Фаза 2): только верхний фрейм. peekSession (без создания) —
+        // nav-report шлётся на ВСЕХ страницах (all_urls); плодить сессии на каждой вкладке
+        // нельзя. Нет сессии → нечего синхронизировать; baseline подхватится ре-репортом.
+        if (tabId != null && frameId === 0) { const s = peekSession(tabId); if (s) onNavReport(s, msg.url); }
+        return;
+      case 'media-sig':
+        // Синхрон серии/озвучки (Фаза 3): репорт из фрейма ПЛЕЕРА (Kodik-iframe, не обяз.
+        // frameId 0). peekSession — сессия уже есть у подключённой вкладки (connect/player-event).
+        if (tabId != null) { const s = peekSession(tabId); if (s) onMediaSig(s, msg.sig); }
         return;
       case 'buffering':
         if (tabId != null) onBuffering(getSession(tabId), msg, frameId);

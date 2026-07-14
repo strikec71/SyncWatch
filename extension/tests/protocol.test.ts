@@ -22,6 +22,9 @@ describe('parseWire — round-trip of valid messages', () => {
     { type: 'BUFFER', buffering: true, currentTime: 3.3, ts: 10, from: 2 },
     { type: 'BEAT', currentTime: 4, playing: true, ts: 11, from: 1 },
     { type: 'AD', ad: false, ts: 12, from: 8 },
+    { type: 'NAV', scope: 'page', url: 'https://jut.su/2.html', ts: 100 },
+    { type: 'NAV', scope: 'page', url: 'https://jut.su/2.html', ts: 100, to: 4, from: 1 },
+    { type: 'NAV', scope: 'player', sig: 'kodik|s=1|e=5|t=610', ts: 100 },
     { type: 'REQUEST_CONTROL' },
     { type: 'REQUEST_CONTROL', from: 3 },
     { type: 'PING', ts: 13 },
@@ -120,5 +123,33 @@ describe('parseWire — rejects malformed input', () => {
 
   it('rejects REQUEST_CONTROL with a non-integer from', () => {
     expect(parseWire({ type: 'REQUEST_CONTROL', from: 1.5 })).toBeNull();
+  });
+
+  it('rejects NAV with an unknown scope', () => {
+    expect(parseWire(JSON.stringify({ type: 'NAV', scope: 'frame', url: 'https://a', ts: 1 }))).toBeNull();
+  });
+
+  it('rejects page-NAV without a string url, or url over 2048 chars', () => {
+    expect(parseWire(JSON.stringify({ type: 'NAV', scope: 'page', ts: 1 }))).toBeNull();
+    expect(parseWire(JSON.stringify({ type: 'NAV', scope: 'page', url: 42, ts: 1 }))).toBeNull();
+    expect(parseWire(JSON.stringify({ type: 'NAV', scope: 'page', url: 'https://a/' + 'x'.repeat(2048), ts: 1 }))).toBeNull();
+  });
+
+  it('rejects player-NAV without a string sig, or sig over 512 chars', () => {
+    expect(parseWire(JSON.stringify({ type: 'NAV', scope: 'player', ts: 1 }))).toBeNull();
+    expect(parseWire(JSON.stringify({ type: 'NAV', scope: 'player', sig: 'x'.repeat(513), ts: 1 }))).toBeNull();
+  });
+
+  it('rejects NAV with a non-finite ts or non-integer to/from', () => {
+    expect(parseWire({ type: 'NAV', scope: 'page', url: 'https://a', ts: NaN })).toBeNull();
+    expect(parseWire({ type: 'NAV', scope: 'page', url: 'https://a', ts: 1, to: 1.5 })).toBeNull();
+    expect(parseWire({ type: 'NAV', scope: 'page', url: 'https://a', ts: 1, from: 2.7 })).toBeNull();
+  });
+
+  it('page-NAV does not carry a stray sig, player-NAV does not carry a stray url', () => {
+    const page = parseWire(JSON.stringify({ type: 'NAV', scope: 'page', url: 'https://a', sig: 'nope', ts: 1 }));
+    expect(page).not.toHaveProperty('sig');
+    const player = parseWire(JSON.stringify({ type: 'NAV', scope: 'player', sig: 'ok', url: 'https://nope', ts: 1 }));
+    expect(player).not.toHaveProperty('url');
   });
 });

@@ -9,6 +9,7 @@ const stub = {
   tabs: {
     sendMessage: () => resolved(),
     query: () => Promise.resolve([] as unknown[]),
+    update: () => resolved(),
   },
   runtime: {
     sendMessage: () => resolved(),
