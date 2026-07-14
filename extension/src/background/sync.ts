@@ -66,6 +66,36 @@ export function canEmit(
   return opts.amController;
 }
 
+/** Идёт ли синхро-навигация (страница Фаза 2 / серия-озвучка Фаза 3): в этом окне входящие
+ *  STATE/BEAT адресованы СТАРОМУ контенту (наш плеер ещё на прежней странице/серии) — их
+ *  применение дёрнуло бы позицию. Свежие придут после готовности нового плеера (video-ready
+ *  → resync Фазы 1). Общая точка для applyRemoteState и onRemoteBeat. */
+export function isSyncNavigating(p: {
+  expectedNav: string | null;
+  expectedNavAt: number;
+  expectedSig: string | null;
+  expectedSigAt: number;
+  now: number;
+  ttl: number;
+}): boolean {
+  return (
+    (p.expectedNav != null && p.now - p.expectedNavAt < p.ttl) ||
+    (p.expectedSig != null && p.now - p.expectedSigAt < p.ttl)
+  );
+}
+
+/** Сессионная обёртка над isSyncNavigating (текущее время + общий TTL). */
+function navigating(s: Session): boolean {
+  return isSyncNavigating({
+    expectedNav: s.expectedNav,
+    expectedNavAt: s.expectedNavAt,
+    expectedSig: s.expectedSig,
+    expectedSigAt: s.expectedSigAt,
+    now: Date.now(),
+    ttl: EXPECTED_NAV_TTL_MS,
+  });
+}
+
 /** Cold-start (Фаза 1): в какой фрейм слать get-snapshot. Активный, если он реально
  *  держит видео; иначе первый фрейм с видео; иначе — активный (пусть промахнётся, чем
  *  ничего). Фиксит гонку frameId=0 до первого player-event хоста (снимок с фрейма без видео). */
@@ -222,9 +252,7 @@ export function applyRemoteState(s: Session, state: StateMessage): void {
   // Пока навигируемся по NAV партнёра (страница ИЛИ серия/озвучка) — этот STATE адресован
   // СТАРОМУ документу/серии. Дропаем: свежий приедет после готовности нового плеера
   // (video-ready → resync Фазы 1). TTL страхует от залипшего expected (Фазы 2/3).
-  const nowTs = Date.now();
-  if (s.expectedNav && nowTs - s.expectedNavAt < EXPECTED_NAV_TTL_MS) return;
-  if (s.expectedSig && nowTs - s.expectedSigAt < EXPECTED_NAV_TTL_MS) return;
+  if (navigating(s)) return;
 
   // Снапшот (STATE.to === myConnId, при join/un-detach) применяем тем же путём.
   s.lastSync = { action: state.action, currentTime: state.currentTime };
@@ -257,6 +285,10 @@ export function onRemoteBeat(s: Session, msg: BeatMessage): void {
   noteActivity(s); // входящий BEAT = партнёр играет → комната активна
   // Дрейф правит только НЕ host и НЕ detached. Host — источник, себя не корректирует.
   if (s.detached || amHost(s)) return;
+  // Во время синхро-навигации (страница/серия) BEAT опорного адресован НОВОМУ контенту —
+  // не даём дрейфу утянуть нашу позицию (напр. авто-переход партнёра на след. серию в 0:00,
+  // пока мы ещё на старой). Свежий BEAT применится после готовности нового плеера.
+  if (navigating(s)) return;
   sendToActiveFrame(s, {
     kind: 'sync-time',
     currentTime: msg.currentTime,

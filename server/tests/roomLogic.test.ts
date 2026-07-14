@@ -8,6 +8,7 @@ import {
   shapeRoster,
   canSendState,
   canNavigate,
+  staleConnIds,
   decide,
 } from '../src/roomLogic';
 import type { PeerState } from '../src/roomLogic';
@@ -131,6 +132,26 @@ describe('canNavigate — NAV gate (no pause exception)', () => {
     expect(canNavigate(3, true, false)).toBe(true);
     expect(canNavigate(3, false, true)).toBe(true);
     expect(canNavigate(10, false, false)).toBe(false);
+  });
+});
+
+describe('staleConnIds — dead-peer reaping', () => {
+  it('никого не выгоняет, пока все свежие', () => {
+    expect(staleConnIds([{ connId: 1, lastSeenAt: 1000 }, { connId: 2, lastSeenAt: 1000 }], 1500, 1000)).toEqual([]);
+  });
+
+  it('помечает молчащих ровно на пороге и дольше', () => {
+    expect(staleConnIds([{ connId: 1, lastSeenAt: 0 }], 1000, 1000)).toEqual([1]); // 1000-0 === staleMs
+    expect(staleConnIds([{ connId: 1, lastSeenAt: 1 }], 1000, 1000)).toEqual([]);  // 999 < staleMs
+  });
+
+  it('выгоняет ТОЛЬКО призрака, живого (недавний PING) не трогает — кейс дубля/host на призраке', () => {
+    // connId 1 — призрак (молчит с 0), connId 2 — живой (пинговал на 9500). Порог 5000.
+    expect(staleConnIds([{ connId: 1, lastSeenAt: 0 }, { connId: 2, lastSeenAt: 9500 }], 10000, 5000)).toEqual([1]);
+  });
+
+  it('возвращает всех молчащих в порядке обхода', () => {
+    expect(staleConnIds([{ connId: 3, lastSeenAt: 0 }, { connId: 1, lastSeenAt: 0 }], 9999, 5000)).toEqual([3, 1]);
   });
 });
 

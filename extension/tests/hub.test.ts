@@ -20,7 +20,7 @@ import {
   type PeerBlock,
 } from '../src/background/state';
 import { computeBackoff, reconnectDecision } from '../src/background/connection';
-import { isEcho, canEmit, pickSnapshotFrame, readyResyncDecision, onVideoReady } from '../src/background/sync';
+import { isEcho, canEmit, pickSnapshotFrame, readyResyncDecision, isSyncNavigating, onVideoReady } from '../src/background/sync';
 import { diffRoster, aggregateBanner } from '../src/background/roster';
 import { onVideoPresence, forgetTab } from '../src/background/presence';
 import { createSession } from '../src/background/state';
@@ -264,6 +264,30 @@ describe('readyResyncDecision', () => {
   it('дросселирует чаще троттлинга', () => {
     expect(readyResyncDecision({ ...base, now: 2000, lastAt: 0 })).toBe(false);
     expect(readyResyncDecision({ ...base, now: 3000, lastAt: 0 })).toBe(true);
+  });
+});
+
+// ── isSyncNavigating (дроп STATE/BEAT во время синхро-навигации) ──────────────
+
+describe('isSyncNavigating', () => {
+  const base = { expectedNav: null, expectedNavAt: 0, expectedSig: null, expectedSigAt: 0, now: 10_000, ttl: 20_000 };
+
+  it('false, когда ничего не навигируется', () => {
+    expect(isSyncNavigating(base)).toBe(false);
+  });
+
+  it('true во время навигации страницы (в пределах TTL)', () => {
+    expect(isSyncNavigating({ ...base, expectedNav: 'https://a/2', expectedNavAt: 5_000 })).toBe(true);
+  });
+
+  it('true во время смены серии/озвучки (в пределах TTL)', () => {
+    expect(isSyncNavigating({ ...base, expectedSig: 'kodik|e=2', expectedSigAt: 9_000 })).toBe(true);
+  });
+
+  it('false после истечения TTL (защита от залипшего expected)', () => {
+    // now-at == ttl → НЕ < ttl → не навигируемся.
+    expect(isSyncNavigating({ ...base, expectedNav: 'x', expectedNavAt: 0, now: 20_000, ttl: 20_000 })).toBe(false);
+    expect(isSyncNavigating({ ...base, expectedSig: 'y', expectedSigAt: 0, now: 19_999, ttl: 20_000 })).toBe(true);
   });
 });
 

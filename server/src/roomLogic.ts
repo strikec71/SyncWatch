@@ -34,6 +34,24 @@ export function electHost(peers: PeerState[]): number | null {
   return host !== null ? host : fallback;
 }
 
+/**
+ * connId'ы участников, молчащих дольше staleMs — кандидаты на реапинг «мёртвых» сокетов.
+ * `lastSeenAt` обновляется на ЛЮБОМ входящем сообщении (в т.ч. keepalive PING ~30–60с), так
+ * что живой участник под порог не попадает. Нужно, потому что при неаккуратном обрыве
+ * (выгрузка MV3 SW, полу-открытый TCP) событие `close` на сервере может не прийти — и без
+ * этого «призрак» висит в комнате навсегда, перехватывая host по наименьшему connId
+ * (дубль «сам с собой» + застрявшие права хоста). Детерминировано → тестируемо.
+ */
+export function staleConnIds(
+  peers: readonly { connId: number; lastSeenAt: number }[],
+  now: number,
+  staleMs: number,
+): number[] {
+  const out: number[] = [];
+  for (const p of peers) if (now - p.lastSeenAt >= staleMs) out.push(p.connId);
+  return out;
+}
+
 /** internal peers → wire ROSTER (self включён в peers). */
 export function shapeRoster(peers: PeerState[], self: number): RosterMessage {
   const shaped: RosterPeer[] = peers.map((p) => ({
