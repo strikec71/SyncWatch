@@ -43,6 +43,11 @@ export interface MediaSigMsg { kind: 'media-sig'; sig: string; human: string; }
 /** background → content-скрипт активного фрейма: применить выбор серии/озвучки партнёра. */
 export interface MediaApplyMsg { kind: 'media-apply'; sig: string; }
 
+/** content-скрипт (фрейм плеера) → background: применить выбор партнёра НЕ удалось (у нас
+ *  нет такой озвучки/серии). `actualSig` — наш реальный выбор сейчас (для починки baseline),
+ *  null если плеер не готов. Хаб снимает луп-гард и не откатывает комнату (расхождение by design). */
+export interface MediaApplyFailedMsg { kind: 'media-apply-failed'; actualSig: string | null; }
+
 /** content-скрипт → background: показать тост в оверлее (напр. «партнёр на паузе»). */
 export interface NoticeMsg { kind: 'notice'; text: string; }
 
@@ -161,6 +166,7 @@ export type RuntimeMessage =
   | NavReportMsg
   | MediaSigMsg
   | MediaApplyMsg
+  | MediaApplyFailedMsg
   | BufferingMsg
   | BeatMsg
   | BufferControlMsg

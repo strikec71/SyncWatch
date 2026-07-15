@@ -26,7 +26,10 @@ export const WATCHDOG_SILENCE_MS = 45000;
 // жмут кнопки — таймер сбрасывается; молчит только настоящая пауза/заброшенная вкладка.
 // Отличать от watchdog (тот про мёртвый сокет и РЕКОННЕКТИТ; этот про живой-но-простаивающий
 // и НЕ реконнектит) и от lastRecvAt (тот дёргает PING/roster — здесь не считается активностью).
-export const IDLE_DISCONNECT_MS = 90 * 60 * 1000; // 1,5 часа
+// Порог большой (6 ч): фильм-найт с долгой паузой (отошли на 1,5–2 ч) НЕ рвёт сессию;
+// закрываем лишь реально забытые вкладки. PING ~30с — копеечный трафик. Возврат из
+// idle-закрытия — АВТОМАТический по первой активности просмотра (idleClosed, см. shouldAutoResume).
+export const IDLE_DISCONNECT_MS = 6 * 60 * 60 * 1000; // 6 часов
 
 // Синхрон идентичности контента (Фаза 2/3): пока мы навигируем по NAV партнёра, входящий
 // STATE адресован СТАРОМУ документу — дропаем его столько после старта навигации. Свежий
@@ -65,6 +68,10 @@ export interface Session {
   autoConnect: boolean;
   /** Закрытие инициировано пользователем — не реконнектить (Фаза 4). */
   intentionalClose: boolean;
+  /** Сокет закрыт по простою (idle), НЕ вручную: таймерный реконнект такую сессию не
+   *  трогает (reconnectDecision→clear), но при первой активности просмотра автоматически
+   *  переподключаемся (shouldAutoResume) — бесшовный возврат после долгой паузы. */
+  idleClosed: boolean;
   driftThreshold: number;
   /** Активный плеерный фрейм ВНУТРИ вкладки (куда слать удалённые команды).
    *  tabId фиксирован; frameId двигается на каждом реальном событии плеера. */
@@ -97,6 +104,14 @@ export interface Session {
   expectedNavAt: number; // Date.now() старта навигации — TTL против залипания (EXPECTED_NAV_TTL_MS)
   /** Когда мы в последний раз САМИ отправили NAV — окно разбора перекрёстных навигаций. */
   lastNavSentAt: number;
+  /** URL, который мы ПОКИНУЛИ своей page-навигацией (+ метка). Защита от эхо-отката:
+   *  направленный NAV снапшота с этим url (хост отстал baseline) в окне после ухода —
+   *  игнорируем, чтобы инициатор не откатился на страницу, с которой сам ушёл. */
+  lastLeftUrl: string;
+  lastLeftAt: number;
+  /** Имя инициатора последней применённой page-навигации — для тоста ПОСЛЕ reload вкладки
+   *  (предыдущий тост «переходим…» гибнет с документом; хаб в SW живёт и досылает). */
+  navFromName: string;
   /** Синхрон серии/озвучки внутри плеера (Фаза 3), scope:'player'. Зеркалит pageUrl-машину:
    *  mediaSig — базовый (последний известный) выбор, '' до первого репорта; expectedSig/At —
    *  выбор, который сейчас применяем по NAV партнёра (луп-гард + дроп STATE); lastSigSentAt —
@@ -128,7 +143,8 @@ export function createSession(tabId: number): Session {
     detached: false,
     autoConnect: true,
     intentionalClose: false,
-    driftThreshold: 1.0,
+    idleClosed: false,
+    driftThreshold: 2.0,
     frameId: 0,
     lastSync: null,
     lastBannerKey: 'none',
@@ -142,6 +158,9 @@ export function createSession(tabId: number): Session {
     expectedNav: null,
     expectedNavAt: 0,
     lastNavSentAt: 0,
+    lastLeftUrl: '',
+    lastLeftAt: 0,
+    navFromName: '',
     mediaSig: '',
     expectedSig: null,
     expectedSigAt: 0,
@@ -166,6 +185,16 @@ export function isIdleExpired(p: {
     p.lastActivityAt > 0 &&
     p.now - p.lastActivityAt >= p.idleMs
   );
+}
+
+/** Пора ли бесшовно вернуться из idle-закрытия (чисто, тестируемо). Возврат ТОЛЬКО из
+ *  idle-состояния (не ручного), при известной комнате и без пользовательского disconnect. */
+export function shouldAutoResume(p: {
+  idleClosed: boolean;
+  room: string;
+  intentionalClose: boolean;
+}): boolean {
+  return p.idleClosed && p.room !== '' && !p.intentionalClose;
 }
 
 // ── Реестр сессий по вкладкам ─────────────────────────────────────────────────

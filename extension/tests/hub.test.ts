@@ -16,11 +16,12 @@ import {
   computeAmHost,
   computeAmController,
   isIdleExpired,
+  shouldAutoResume,
   emptyBlock,
   type PeerBlock,
 } from '../src/background/state';
 import { computeBackoff, reconnectDecision } from '../src/background/connection';
-import { isEcho, canEmit, pickSnapshotFrame, readyResyncDecision, isSyncNavigating, onVideoReady } from '../src/background/sync';
+import { isEcho, canEmit, pickSnapshotFrame, readyResyncDecision, isSyncNavigating, shouldPushNavInSnapshot, onVideoReady } from '../src/background/sync';
 import { diffRoster, aggregateBanner } from '../src/background/roster';
 import { onVideoPresence, forgetTab } from '../src/background/presence';
 import { createSession } from '../src/background/state';
@@ -48,7 +49,7 @@ describe('hub constants', () => {
     expect(BACKOFF_CAP).toBe(30000);
     expect(BACKOFF_JITTER).toBe(1000);
     expect(WATCHDOG_SILENCE_MS).toBe(45000);
-    expect(IDLE_DISCONNECT_MS).toBe(90 * 60 * 1000);
+    expect(IDLE_DISCONNECT_MS).toBe(6 * 60 * 60 * 1000);
   });
 });
 
@@ -80,6 +81,32 @@ describe('isIdleExpired', () => {
 
   it('не срабатывает без единой активности (lastActivityAt=0)', () => {
     expect(isIdleExpired({ ...base, lastActivityAt: 0, now: 10 * IDLE_DISCONNECT_MS })).toBe(false);
+  });
+
+  it('порог поднят до 6 часов (фильм-найт с долгой паузой не рвёт сессию)', () => {
+    expect(IDLE_DISCONNECT_MS).toBe(6 * 60 * 60 * 1000);
+  });
+});
+
+// ── shouldAutoResume (бесшовный возврат из idle-закрытия по активности) ─────────
+
+describe('shouldAutoResume', () => {
+  const base = { idleClosed: true, room: 'abc', intentionalClose: false };
+
+  it('idle-закрытая сессия с комнатой → возобновляем', () => {
+    expect(shouldAutoResume(base)).toBe(true);
+  });
+
+  it('не idle-закрытая (обычная) → не трогаем', () => {
+    expect(shouldAutoResume({ ...base, idleClosed: false })).toBe(false);
+  });
+
+  it('закрытая вручную (intentionalClose) → не возобновляем даже при idleClosed', () => {
+    expect(shouldAutoResume({ ...base, intentionalClose: true })).toBe(false);
+  });
+
+  it('нет комнаты → нечего возобновлять', () => {
+    expect(shouldAutoResume({ ...base, room: '' })).toBe(false);
   });
 });
 
@@ -131,10 +158,15 @@ describe('reconnectDecision', () => {
     room: 'abc',
     connected: false,
     timerPending: false,
+    idleClosed: false,
   };
 
   it('connect: должны быть на связи, но не на связи и быстрый setTimeout не ждёт', () => {
     expect(reconnectDecision(base)).toBe('connect');
+  });
+
+  it('clear: idle-закрытие — таймерный реконнект idle-сессию не трогает (возврат по активности)', () => {
+    expect(reconnectDecision({ ...base, idleClosed: true })).toBe('clear');
   });
 
   it('wait: быстрый setTimeout ещё запланирован (SW жив) — не мешаем', () => {
@@ -288,6 +320,28 @@ describe('isSyncNavigating', () => {
     // now-at == ttl → НЕ < ttl → не навигируемся.
     expect(isSyncNavigating({ ...base, expectedNav: 'x', expectedNavAt: 0, now: 20_000, ttl: 20_000 })).toBe(false);
     expect(isSyncNavigating({ ...base, expectedSig: 'y', expectedSigAt: 0, now: 19_999, ttl: 20_000 })).toBe(true);
+  });
+});
+
+// ── shouldPushNavInSnapshot (Fix 2: хост не шлёт устаревший NAV в снапшоте) ────
+
+describe('shouldPushNavInSnapshot', () => {
+  const base = { value: 'https://a/1', expected: null as string | null, expectedAt: 0, now: 10_000, ttl: 20_000 };
+
+  it('шлём, когда есть значение и хост не в переходе', () => {
+    expect(shouldPushNavInSnapshot(base)).toBe(true);
+  });
+
+  it('пустое значение (нет своей страницы/серии) → не шлём', () => {
+    expect(shouldPushNavInSnapshot({ ...base, value: '' })).toBe(false);
+  });
+
+  it('хост сам в переходе (expected жив по TTL) → не шлём устаревший baseline', () => {
+    expect(shouldPushNavInSnapshot({ ...base, expected: 'https://a/2', expectedAt: 5_000 })).toBe(false);
+  });
+
+  it('переход хоста протух по TTL → снова шлём', () => {
+    expect(shouldPushNavInSnapshot({ ...base, expected: 'https://a/2', expectedAt: 0, now: 20_000 })).toBe(true);
   });
 });
 

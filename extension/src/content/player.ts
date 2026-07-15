@@ -12,9 +12,11 @@ import type {
   VideoPresenceMsg,
   VideoReadyMsg,
   MediaSigMsg,
+  MediaApplyFailedMsg,
   NoticeMsg,
 } from '../shared/messages';
 import { findAdapter, queryVideosDeep } from './adapters';
+import { driftDecision, DriftNudger } from './drift';
 
 /** Cold-start: отложенная команда, пока <video> ещё не готов (балансеры создают его
  *  лениво). readyState<1 или бесконечная duration → метаданных нет, применять некуда. */
@@ -32,6 +34,8 @@ const APPLY_RELEASE_MS = 400; // через сколько снимаем фла
 const HEARTBEAT_MS = 3000;  // период биения позиции (Фаза 2)
 const BUFFER_WATCHDOG_MS = 1000; // как часто сторож проверяет выход из буферизации
 const MAX_BUFFER_HOLD_MS = 30000; // жёсткий предел холда буфера — страховка от «зависшего» ожидания
+const HARD_SEEK_S = 4;      // сек: выше этого дрейфа плавным нуджем не догнать — жёсткий seek
+const NUDGE_FACTOR = 0.08;  // ±8% к базовой скорости — плавная подстройка при умеренном дрейфе
 
 export class PlayerController {
   private video: HTMLVideoElement | null = null;
@@ -52,6 +56,8 @@ export class PlayerController {
   private awaitingGesture = false;    // автоплей заблокирован — ждём клик/клавишу, чтобы доиграть play (Фаза 1)
   private readySent = false;          // отправляли ли video-ready для ТЕКУЩЕГО элемента (раз на элемент)
   private lastSigReported: string | null = null; // последняя отправленная подпись серии/озвучки (Фаза 3)
+  private driftStrikes = 0;           // сколько BEAT подряд дрейф превысил порог (нужно ≥2 для коррекции)
+  private nudger = new DriftNudger();  // плавная подстройка скоростью при умеренном дрейфе (пункт 1)
 
   start(): void {
     this.scan();
@@ -95,6 +101,7 @@ export class PlayerController {
     const adNow = adapter?.isAd?.(document) ?? false;
     if (adNow === this.isAdActive) return;
     this.isAdActive = adNow;
+    if (adNow) this.cancelNudge(); // началась своя реклама — подстройку скоростью снимаем
     const msg: AdMsg = { kind: 'ad', ad: adNow };
     browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
   }
@@ -124,10 +131,18 @@ export class PlayerController {
   }
 
   /** Применить выбор серии/озвучки партнёра: драйвим родной UI плеера через адаптер.
-   *  Он сам сменит источник → checkMediaSig затем отрепортит новое состояние (хаб подтвердит). */
+   *  Он сам сменит источник → checkMediaSig затем отрепортит новое состояние (хаб подтвердит).
+   *  Если применить не удалось (у нас нет такой озвучки/серии — наборы различаются) — сообщаем
+   *  хабу наш РЕАЛЬНЫЙ выбор, чтобы он снял луп-гард и починил baseline (не откатывая комнату). */
   applyMediaSelection(sig: string): void {
     const adapter = findAdapter(location.hostname, document);
-    adapter?.applySelection?.(sig, document);
+    if (!adapter?.applySelection) return;
+    adapter.applySelection(sig, document, (ok) => {
+      if (ok) return;
+      const actualSig = adapter.getSelection?.(document)?.sig ?? null;
+      const msg: MediaApplyFailedMsg = { kind: 'media-apply-failed', actualSig };
+      browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
+    });
   }
 
   private pickActiveVideo(): HTMLVideoElement | null {
@@ -162,6 +177,7 @@ export class PlayerController {
     this.detach();
     this.video = video;
     this.readySent = false; // новый элемент — video-ready отправим заново
+    this.driftStrikes = 0;  // новый плеер — счётчик дрейфа с нуля
     video.addEventListener('play', this.onPlay);
     video.addEventListener('pause', this.onPause);
     video.addEventListener('seeked', this.onSeeked);
@@ -179,6 +195,7 @@ export class PlayerController {
 
   private detach(): void {
     if (!this.video) return;
+    this.cancelNudge(); // уходит <video> — снимаем активную подстройку скоростью
     this.video.removeEventListener('play', this.onPlay);
     this.video.removeEventListener('pause', this.onPause);
     this.video.removeEventListener('seeked', this.onSeeked);
@@ -226,9 +243,19 @@ export class PlayerController {
   // last-writer-wins: локальные play/pause просто транслируем, удалённые — применяем.
   // Гейт isApplyingRemote гасит эхо (наши же программные play/pause/seek не транслируем).
   private onPlay = () => { if (!this.isApplyingRemote) this.emit('play'); };
-  private onPause = () => { if (!this.isApplyingRemote) this.emit('pause'); };
-  private onSeeked = () => this.emit('seek');
-  private onRate = () => this.emit('rate');
+  private onPause = () => { this.cancelNudge(); if (!this.isApplyingRemote) this.emit('pause'); };
+  private onSeeked = () => { this.cancelNudge(); this.emit('seek'); };
+  // ratechange от нашего же нуджа/возврата НЕ транслируем (эхо-детект по lastSetRate).
+  // Если скорость поменял кто-то ещё (юзер/сеть) во время нуджа — бросаем нудж и транслируем.
+  private onRate = () => {
+    const v = this.video;
+    if (this.nudger.isActive && v && Math.abs(v.playbackRate - this.nudger.lastSetRate) < 0.001) return;
+    if (this.nudger.isActive) this.nudger.abandon(); // rate перехватил юзер/сеть — отдаём скорость
+    this.emit('rate');
+  };
+
+  /** Снять активную подстройку скоростью с возвратом базовой (общая точка для гейтов). */
+  private cancelNudge(): void { this.nudger.cancel(this.video, APPLY_RELEASE_MS); }
 
   /** Партнёр держит нас на паузе техническим холдом (буфер/реклама) — сквозь него не играем. */
   private heldByPeer(): boolean {
@@ -265,6 +292,7 @@ export class PlayerController {
     if (on === this.isBuffering) return;
     this.isBuffering = on;
     if (on) {
+      this.cancelNudge(); // буфер-холд — плавную подстройку снимаем
       this.bufferStartedAt = Date.now();
       this.bufferStartTime = this.video?.currentTime ?? 0;
       this.startBufferWatchdog();
@@ -386,25 +414,44 @@ export class PlayerController {
 
   private static readonly LOCAL_ACTION_COOLDOWN_MS = 1500;
 
-  /** Не-опорный по дрейфу подтягивается к опорному при дрейфе сверх порога (Фаза 2). */
+  /** Не-опорный по дрейфу подтягивается к опорному при дрейфе сверх порога (Фаза 2).
+   *  Двухступенчато: умеренный дрейф добираем плавно скоростью (нудж), большой — жёстким
+   *  seek. Коррекция только после ДВУХ превышений подряд — одиночный выброс (лаг) не дёргает. */
   applyDriftCorrection(currentTime: number, _ts: number, threshold: number): void {
     const v = this.video;
-    if (!v || this.isBuffering || this.isAdActive || v.paused || v.ended) return;
-    // Кулдаун: после своей команды не даём биению опорного откатить нашу свежую позицию,
-    // пока команда долетает и применяется у партнёра.
-    if (Date.now() - this.lastLocalActionTs < PlayerController.LOCAL_ACTION_COOLDOWN_MS) return;
+    // Гейты коррекции: нет видео / буфер / реклама / пауза / конец / кулдаун после своей
+    // команды (не откатываем свежую локальную позицию) — счётчик в ноль, нудж снимаем.
+    const cooldown = Date.now() - this.lastLocalActionTs < PlayerController.LOCAL_ACTION_COOLDOWN_MS;
+    if (!v || this.isBuffering || this.isAdActive || v.paused || v.ended || cooldown) {
+      this.driftStrikes = 0;
+      this.cancelNudge();
+      return;
+    }
     // ВАЖНО: НЕ компенсируем задержку через `ts` — он со стенных часов ДРУГОЙ машины, а
     // часы двух ПК не синхронны (рассинхрон в секунды — норма). Эта «компенсация» вносила
     // перекос часов прямо в позицию → откаты на 5–7с каждым биением. Реальная сетевая
     // задержка (доли секунды) и так покрыта порогом `threshold`.
-    const target = currentTime;
-    if (Math.abs(v.currentTime - target) <= threshold) return;
-    this.isApplyingRemote = true;
-    try {
-      v.currentTime = target;
-    } finally {
-      this.releaseSoon();
+    const diff = v.currentTime - currentTime; // знак: >0 мы впереди опорного, <0 отстаём
+    if (Math.abs(diff) <= threshold) {
+      this.driftStrikes = 0;
+      this.cancelNudge(); // сошлись — возвращаем базовую скорость
+      return;
     }
+    this.driftStrikes++;
+    const decision = driftDecision(diff, threshold, HARD_SEEK_S, this.driftStrikes);
+    if (decision === 'none') return; // одиночный выброс — ждём подтверждения следующим битом
+    if (decision === 'seek') {
+      this.driftStrikes = 0;
+      this.cancelNudge();
+      this.isApplyingRemote = true;
+      try {
+        v.currentTime = currentTime;
+      } finally {
+        this.releaseSoon();
+      }
+      return;
+    }
+    this.nudger.start(v, diff, NUDGE_FACTOR); // 'nudge' — плавная подстройка скоростью
   }
 
   /** Снять флаг isApplyingRemote после того, как отработают вызванные нами события. */

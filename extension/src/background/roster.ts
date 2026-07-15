@@ -143,10 +143,10 @@ export function applyRoster(s: Session, msg: RosterMessage): void {
 
   const { joined, left } = diffRoster(prev, msg.peers);
   for (const p of joined) {
-    if (p.id !== msg.self) notifyEvent(s, `${p.name || 'Партнёр'} подключился`);
+    if (p.id !== msg.self) notifyEvent(s, `${p.name || 'Партнёр'} подключился(-ась)`);
   }
   for (const p of left) {
-    if (p.id !== msg.self) notifyEvent(s, `${p.name || 'Партнёр'} отключился`);
+    if (p.id !== msg.self) notifyEvent(s, `${p.name || 'Партнёр'} отключился(-ась)`);
   }
 
   const nextMap = new Map<number, RosterPeer>(msg.peers.map((p) => [p.id, p]));

@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // connect() вернёт «Не задан адрес сервера» — это ожидаемо до первой настройки/приглашения.
   serverUrl: '',
   room: '',
-  driftThreshold: 1.0,
+  driftThreshold: 2.0,
   autoConnect: true,
   overlayEnabled: true,
   deviceName: '', // пустое → сгенерируем при первом запуске (см. ensureDeviceName)

@@ -105,6 +105,22 @@ export function pickSnapshotFrame(activeFrameId: number, framesWithVideo: number
   return activeFrameId;
 }
 
+/** Fix 2 (эхо-ссылка): слать ли NAV в направленном снапшоте новичку. Не шлём, если у
+ *  ХОСТА самого активен переход (expected жив по TTL) — его baseline может быть устаревшим,
+ *  и снапшот отразил бы старый url/sig обратно (→ откат инициатора / лишний reload). Пустое
+ *  значение (нет своей страницы/серии) тоже не шлём. Общая для scope page/player. */
+export function shouldPushNavInSnapshot(p: {
+  value: string;
+  expected: string | null;
+  expectedAt: number;
+  now: number;
+  ttl: number;
+}): boolean {
+  if (!p.value) return false;
+  if (p.expected != null && p.now - p.expectedAt < p.ttl) return false;
+  return true;
+}
+
 /** Cold-start (Фаза 1): слать ли resync (MODE{detached:false}) при готовности <video>.
  *  Только не-host и не-detached (нельзя выдёргивать из соло), с собственным троттлингом. */
 export function readyResyncDecision(p: {
@@ -306,18 +322,23 @@ const SNAPSHOT_RETRY_MS = 1500;
  *  Неготовый снимок (ready:false) отбраковываем и один раз повторяем. */
 export async function pushSnapshot(s: Session, req: SnapshotReqMessage, attempt = 0): Promise<void> {
   if (!amHost(s)) return;
+  const now = Date.now();
   // Синхрон страницы (Фаза 2): перед позицией отдаём новичку АДРЕС страницы комнаты
   // направленным NAV — иначе он остался бы на дефолтной серии (URL плеера её не несёт).
-  // Только раз (attempt===0), только если знаем свою страницу. Он навигируется, а
-  // позиция досинкается после готовности его нового плеера (video-ready → resync).
-  if (attempt === 0 && s.pageUrl) {
-    sendWire(s, { type: 'NAV', scope: 'page', url: s.pageUrl, ts: Date.now(), to: req.target });
+  // Только раз (attempt===0). Fix 2: пропускаем, пока хост сам в процессе перехода
+  // (expectedNav жив) — иначе отдали бы устаревший baseline (эхо-откат инициатора).
+  if (attempt === 0 && shouldPushNavInSnapshot({
+    value: s.pageUrl, expected: s.expectedNav, expectedAt: s.expectedNavAt, now, ttl: EXPECTED_NAV_TTL_MS,
+  })) {
+    sendWire(s, { type: 'NAV', scope: 'page', url: s.pageUrl, ts: now, to: req.target });
   }
   // Затем — выбор серии/сезона/озвучки (Фаза 3), чтобы новичок оказался НЕ на дефолтной
   // серии. Порядок: страница → серия → позиция. Плеер сменит источник на месте, позицию
   // добьёт resync по video-ready. Это и есть фикс «приглашённый на 1-й серии/дефолтной озвучке».
-  if (attempt === 0 && s.mediaSig) {
-    sendWire(s, { type: 'NAV', scope: 'player', sig: s.mediaSig, ts: Date.now(), to: req.target });
+  if (attempt === 0 && shouldPushNavInSnapshot({
+    value: s.mediaSig, expected: s.expectedSig, expectedAt: s.expectedSigAt, now, ttl: EXPECTED_NAV_TTL_MS,
+  })) {
+    sendWire(s, { type: 'NAV', scope: 'player', sig: s.mediaSig, ts: now, to: req.target });
   }
   const frameId = pickSnapshotFrame(s.frameId, framesWithVideo(s.tabId));
   try {
@@ -348,10 +369,10 @@ export async function pushSnapshot(s: Session, req: SnapshotReqMessage, attempt 
 function partnerActionText(s: Session, state: StateMessage): string {
   const who = peerName(s, state.from);
   switch (state.action) {
-    case 'play': return `${who} продолжил воспроизведение`;
-    case 'pause': return `${who} поставил на паузу`;
-    case 'seek': return `${who} перемотал на ${fmtTime(state.currentTime)}`;
-    case 'rate': return `${who} изменил скорость ×${state.rate ?? 1}`;
+    case 'play': return `${who} продолжил(а) воспроизведение`;
+    case 'pause': return `${who} поставил(а) на паузу`;
+    case 'seek': return `${who} перемотал(а) на ${fmtTime(state.currentTime)}`;
+    case 'rate': return `${who} изменил(а) скорость ×${state.rate ?? 1}`;
   }
 }
 

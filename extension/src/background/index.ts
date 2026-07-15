@@ -28,9 +28,9 @@ import {
   KEEPALIVE_ALARM,
   RECONNECT_ALARM,
 } from './state';
-import { connect, disconnect, cancelReconnect, checkWatchdog, checkIdle, reconnectTick } from './connection';
+import { connect, disconnect, cancelReconnect, checkWatchdog, checkIdle, reconnectTick, maybeResume } from './connection';
 import { onPlayerEvent, onBuffering, onBeat, onAd, onVideoReady } from './sync';
-import { onNavReport, onMediaSig } from './nav';
+import { onNavReport, onMediaSig, onMediaApplyFailed, normalizeSyncUrl } from './nav';
 import { notifyEvent, notifyPopup, statusSnapshot } from './roster';
 import { onVideoPresence, queryVideoAvailable, forgetTab } from './presence';
 
@@ -53,6 +53,13 @@ browser.runtime.onMessage.addListener(
         if (tabId == null) { sendResponse({ ok: false, error: 'no tab' }); return; }
         const s = getSession(tabId);
         cancelReconnect(s); // явное подключение — начинаем backoff заново
+        // Fix 4 (пропадающая панель): baseline страницы = URL вкладки-отправителя, синхронно
+        // при connect. Тогда «первый репорт» не пуст → направленный NAV снапшота с тем же URL
+        // (новичок уже на нужной странице) распознаётся как url===baseline → без reload островка.
+        if (s.pageUrl === '' && sender.tab?.url) {
+          const base = normalizeSyncUrl(sender.tab.url);
+          if (base) s.pageUrl = base;
+        }
         connect(s, msg.room, msg.serverUrl).then(sendResponse);
         return true; // ответ асинхронный
       }
@@ -65,7 +72,7 @@ browser.runtime.onMessage.addListener(
         sendResponse(tabId != null ? (peekSession(tabId) ? statusSnapshot(peekSession(tabId)!) : emptySnapshot()) : emptySnapshot());
         return;
       case 'player-event':
-        if (tabId != null) onPlayerEvent(getSession(tabId), msg, frameId);
+        if (tabId != null) { const s = getSession(tabId); maybeResume(s); onPlayerEvent(s, msg, frameId); }
         return;
       case 'video-ready':
         // Cold-start (Фаза 1): плеер фрейма доиграл метаданные — маркируем активный фрейм
@@ -76,18 +83,23 @@ browser.runtime.onMessage.addListener(
         // Синхрон URL страницы (Фаза 2): только верхний фрейм. peekSession (без создания) —
         // nav-report шлётся на ВСЕХ страницах (all_urls); плодить сессии на каждой вкладке
         // нельзя. Нет сессии → нечего синхронизировать; baseline подхватится ре-репортом.
-        if (tabId != null && frameId === 0) { const s = peekSession(tabId); if (s) onNavReport(s, msg.url); }
+        if (tabId != null && frameId === 0) { const s = peekSession(tabId); if (s) { maybeResume(s); onNavReport(s, msg.url); } }
         return;
       case 'media-sig':
         // Синхрон серии/озвучки (Фаза 3): репорт из фрейма ПЛЕЕРА (Kodik-iframe, не обяз.
         // frameId 0). peekSession — сессия уже есть у подключённой вкладки (connect/player-event).
-        if (tabId != null) { const s = peekSession(tabId); if (s) onMediaSig(s, msg.sig); }
+        if (tabId != null) { const s = peekSession(tabId); if (s) { maybeResume(s); onMediaSig(s, msg.sig); } }
+        return;
+      case 'media-apply-failed':
+        // Content не смог применить выбор партнёра (нет такой озвучки/серии) — снимаем луп-гард
+        // и чиним baseline; НЕ откатываем комнату (расхождение озвучек допустимо by design).
+        if (tabId != null) { const s = peekSession(tabId); if (s) onMediaApplyFailed(s, msg.actualSig); }
         return;
       case 'buffering':
         if (tabId != null) onBuffering(getSession(tabId), msg, frameId);
         return;
       case 'beat':
-        if (tabId != null) onBeat(getSession(tabId), msg, frameId);
+        if (tabId != null) { const s = getSession(tabId); maybeResume(s); onBeat(s, msg, frameId); }
         return;
       case 'ad':
         if (tabId != null) onAd(getSession(tabId), msg, frameId);
@@ -165,7 +177,8 @@ browser.alarms.onAlarm.addListener((alarm) => {
     let anyPending = false;
     for (const s of allSessions()) {
       reconnectTick(s);
-      if (!s.intentionalClose && s.autoConnect && s.room && !s.connected) anyPending = true;
+      // idle-закрытые не считаем ожидающими — их возвращает активность, не таймер.
+      if (!s.intentionalClose && !s.idleClosed && s.autoConnect && s.room && !s.connected) anyPending = true;
     }
     if (!anyPending) void browser.alarms.clear(RECONNECT_ALARM);
     return;

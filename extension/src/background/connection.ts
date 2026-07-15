@@ -28,6 +28,7 @@ import {
   WATCHDOG_SILENCE_MS,
   IDLE_DISCONNECT_MS,
   isIdleExpired,
+  shouldAutoResume,
 } from './state';
 import {
   applyRoster,
@@ -69,6 +70,7 @@ export async function connect(
   s.deviceName = await ensureDeviceName();
   s.autoConnect = settings.autoConnect;
   s.intentionalClose = false;
+  s.idleClosed = false; // явное/авто-подключение снимает idle-состояние
   s.driftThreshold = settings.driftThreshold;
   s.room = useRoom;
 
@@ -156,8 +158,10 @@ export function reconnectDecision(p: {
   room: string;
   connected: boolean;
   timerPending: boolean;
+  idleClosed: boolean;
 }): ReconnectDecision {
-  if (p.intentionalClose || !p.autoConnect || !p.room || p.connected) return 'clear';
+  // idle-закрытие: реконнекта по таймеру нет (возврат только по активности — shouldAutoResume).
+  if (p.intentionalClose || p.idleClosed || !p.autoConnect || !p.room || p.connected) return 'clear';
   if (p.timerPending) return 'wait';
   return 'connect';
 }
@@ -170,6 +174,7 @@ export function reconnectTick(s: Session): void {
     room: s.room,
     connected: s.connected,
     timerPending: s.reconnectTimer != null,
+    idleClosed: s.idleClosed,
   });
   if (decision === 'wait') return;      // SW жив, setTimeout дожмёт сам
   if (decision === 'connect') void connect(s, s.room); // connect() сам снимет полу-открытый сокет
@@ -206,8 +211,21 @@ export function checkIdle(s: Session): void {
     now: Date.now(),
     idleMs: IDLE_DISCONNECT_MS,
   })) return;
-  notifyEvent(s, 'Отключено по простою (пауза дольше 1,5 ч) — нажмите «Войти», чтобы вернуться');
-  disconnect(s);
+  notifyEvent(s, 'Простой дольше 6 ч — соединение приостановлено, продолжится при просмотре');
+  // idle-закрытие (НЕ ручное): intentionalClose НЕ ставим, реконнект по таймеру не планируем.
+  // Сокет рвём (экономим трафик); вернёмся автоматически при первой активности (maybeResume).
+  s.idleClosed = true;
+  cancelReconnect(s); // снять возможный отложенный таймер — не реконнектить по расписанию
+  teardownSocket(s);  // close()→'close' придёт уже с s.ws===null (zombie-gate) → onSocketDown не сработает
+}
+
+/** Реальная активность просмотра после idle-закрытия → бесшовно переподключаемся.
+ *  Возврат ТОЛЬКО по активности: idle-сессию таймерный реконнект не трогает
+ *  (reconnectDecision→'clear'). Для не-idle сессий — no-op. */
+export function maybeResume(s: Session): void {
+  if (!shouldAutoResume({ idleClosed: s.idleClosed, room: s.room, intentionalClose: s.intentionalClose })) return;
+  s.idleClosed = false;
+  void connect(s, s.room);
 }
 
 /** Диспетчер входящих WS-сообщений сессии. Валидируем общим parseWire (тем же, что сервер). */
@@ -233,7 +251,7 @@ function onWire(s: Session, raw: unknown): void {
       onRemoteBeat(s, msg as BeatMessage);
       break;
     case 'NAV':
-      applyRemoteNav(s, msg as NavMessage);
+      void applyRemoteNav(s, msg as NavMessage);
       break;
     case 'SNAPSHOT_REQ':
       void pushSnapshot(s, msg as SnapshotReqMessage);

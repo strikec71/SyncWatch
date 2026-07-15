@@ -22,8 +22,10 @@ export interface SiteAdapter {
   /** Текущий выбор серии/сезона/озвучки (Фаза 3). null → плеер не готов/не сериал. */
   getSelection?(doc: Document): ContentSelection | null;
   /** Применить выбор партнёра. Драйвим родной UI плеера (для Kodik — нативные <select>),
-   *  чтобы он сам сменил источник. Не задан → синхрон выбора для сайта не поддержан. */
-  applySelection?(sig: string, doc: Document): void;
+   *  чтобы он сам сменил источник. Не задан → синхрон выбора для сайта не поддержан.
+   *  `onDone` (если передан) вызывается ровно раз: `true` при достижении выбора, `false` по
+   *  исчерпании ретраев (такой серии/озвучки в нашем плеере нет — наборы различаются). */
+  applySelection?(sig: string, doc: Document, onDone?: (ok: boolean) => void): void;
 }
 
 const YOUTUBE: SiteAdapter = {
@@ -143,9 +145,9 @@ const KODIK: SiteAdapter = {
     const sig = kodikBuildSig(sel);
     return sig ? { sig, human: kodikHuman(doc) } : null;
   },
-  applySelection: (sig, doc) => {
+  applySelection: (sig, doc, onDone) => {
     const want = kodikParseSig(sig);
-    if (!want) return;
+    if (!want) { onDone?.(false); return; }
     let left = KODIK_APPLY_RETRIES;
     const step = (): void => {
       // Порядок важен: озвучка → сезон → серия (каждое перестраивает следующий список).
@@ -158,13 +160,143 @@ const KODIK: SiteAdapter = {
         (!want.season || now.season === want.season) &&
         (!want.episode || now.episode === want.episode) &&
         (!want.translation || now.translation === want.translation);
-      if (!done && --left > 0) setTimeout(step, KODIK_APPLY_INTERVAL_MS);
+      if (done) { onDone?.(true); return; }
+      if (--left > 0) setTimeout(step, KODIK_APPLY_INTERVAL_MS);
+      else onDone?.(false); // такой серии/озвучки в нашем плеере нет — сигнализируем хабу
     };
     step();
   },
 };
 
-const ADAPTERS: SiteAdapter[] = [YOUTUBE, JUTSU, KODIK, PLAYERJS];
+// ── Alloha-балансер (пункт 5 фиксов): «основной плеер» jut-su.net и др. ────────
+// jut-su.net грузит Alloha в кросс-доменный iframe (ротируемое зеркало — домен случайный,
+// матчим ТОЛЬКО по DOM). Серию/сезон/озвучку меняют кастомные дропдауны (НЕ <select>):
+// `.select[data-select^="…"] .select__drop-item[data-id]`, активный — класс `active`.
+// Плеер сам переключает серии кликом по `.select__drop-item` (делегированный хендлер) —
+// источник меняется НА МЕСТЕ из инлайн-модели, без навигации iframe. Драйвим тем же кликом.
+// data-id: сезон/серия — числа; озвучка — `t<ID>` (в подписи храним числовой хвост).
+// Детали: memory syncwatch-jutsu-alloha.
+
+type AllohaSel = { season: string | null; episode: string | null; translation: string | null };
+
+/** Подпись выбора Alloha (числа/id — стабильны между машинами). Порядок s|e|t; отсутствующие
+ *  измерения опускаем (фильмы: только озвучка). Зеркалит формат Kodik со своим префиксом. */
+export function allohaBuildSig(sel: AllohaSel): string | null {
+  const parts: string[] = [];
+  if (sel.season) parts.push(`s=${sel.season}`);
+  if (sel.episode) parts.push(`e=${sel.episode}`);
+  if (sel.translation) parts.push(`t=${sel.translation}`);
+  if (parts.length === 0) return null; // ни одного измерения — плеер не готов
+  return `alloha|${parts.join('|')}`;
+}
+
+/** Разобрать подпись Alloha обратно в измерения. Чужой префикс → null. */
+export function allohaParseSig(sig: string): AllohaSel | null {
+  const parts = sig.split('|');
+  if (parts[0] !== 'alloha') return null;
+  const out: AllohaSel = { season: null, episode: null, translation: null };
+  for (const p of parts.slice(1)) {
+    const [k, v] = p.split('=');
+    if (!v) continue;
+    if (k === 's') out.season = v;
+    else if (k === 'e') out.episode = v;
+    else if (k === 't') out.translation = v;
+  }
+  return out;
+}
+
+/** data-id активного пункта дропдауна (`.select__drop-item.active`) в боксе, или null. */
+function allohaActiveId(doc: Document, boxSel: string): string | null {
+  const el = doc.querySelector<HTMLElement>(`${boxSel} .select__drop-item.active`);
+  const id = el?.getAttribute('data-id');
+  return id != null && id !== '' ? id : null;
+}
+
+function allohaRead(doc: Document): AllohaSel {
+  const t = allohaActiveId(doc, '[data-select^="translation"]');
+  return {
+    season: allohaActiveId(doc, '[data-select^="season"]'),
+    episode: allohaActiveId(doc, '[data-select^="episode"]'),
+    translation: t ? t.replace(/^t/, '') : null, // 't10' → '10' (в подписи — числовой хвост)
+  };
+}
+
+/** Человекочитаемая подпись из текстов выбранных пунктов (`.select__item-text`). */
+function allohaHuman(doc: Document): string {
+  const text = (boxSel: string): string | null =>
+    doc.querySelector<HTMLElement>(`${boxSel} .select__item-text`)?.textContent?.trim() || null;
+  const bits = [
+    text('[data-select^="season"]'),
+    text('[data-select^="episode"]'),
+    text('[data-select^="translation"]'),
+  ].filter(Boolean);
+  return bits.join(' · ') || 'серия';
+}
+
+/** Нативный клик по пункту с фолбэком полной последовательностью: делегированный хендлер
+ *  Alloha может слушать pointerdown/mousedown, а не click — шлём весь ряд, завершая одиночным
+ *  el.click() (без дубля click-события). Runtime-риск №1 плана — проверяется живьём. */
+function allohaClickItem(el: HTMLElement): void {
+  for (const type of ['pointerdown', 'mousedown', 'mouseup'] as const) {
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+  }
+  el.click();
+}
+
+/** Кликнуть пункт с нужным data-id в боксе (если он есть и ещё не активен). */
+function allohaDrive(doc: Document, boxSel: string, dataId: string): void {
+  const box = doc.querySelector(boxSel);
+  if (!box) return;
+  const item = box.querySelector<HTMLElement>(`.select__drop-item[data-id="${CSS.escape(dataId)}"]`);
+  if (!item) return; // список ещё не перестроен (репопуляция после смены сезона/озвучки не дошла)
+  if (item.classList.contains('active')) return; // уже выбран — не дёргаем
+  allohaClickItem(item);
+}
+
+// Смена озвучки/сезона перестраивает список серий асинхронно (`.baron__scroller` empty→append) —
+// применяем поэтапно с повторами, как у Kodik.
+const ALLOHA_APPLY_RETRIES = 6;
+const ALLOHA_APPLY_INTERVAL_MS = 400;
+
+const ALLOHA: SiteAdapter = {
+  name: 'alloha',
+  // ТОЛЬКО DOM-сигнатура (домен зеркала ротируется). Требуем И селект-дропдаун, И наш
+  // контент-video, чтобы не зацепить чужие плееры.
+  matches: (_host, doc) =>
+    !!doc.querySelector('[data-select^="episodeType"], [data-select^="seasonType"], [data-select^="translation"]')
+    && !!doc.querySelector('video#player'),
+  // Пиновать контент-video: универсальная эвристика во время преролла схватила бы РЕКЛАМНОЕ
+  // видео rmp-vast (`.rmp-ad-container video`).
+  pick: (doc) => doc.querySelector<HTMLVideoElement>('video#player'),
+  getSelection: (doc) => {
+    const sel = allohaRead(doc);
+    const sig = allohaBuildSig(sel);
+    return sig ? { sig, human: allohaHuman(doc) } : null;
+  },
+  applySelection: (sig, doc, onDone) => {
+    const want = allohaParseSig(sig);
+    if (!want) { onDone?.(false); return; }
+    let left = ALLOHA_APPLY_RETRIES;
+    const step = (): void => {
+      // Порядок: озвучка → сезон → серия (каждое перестраивает следующий список). Озвучка —
+      // data-id с префиксом `t`.
+      if (want.translation) allohaDrive(doc, '[data-select^="translation"]', `t${want.translation}`);
+      if (want.season) allohaDrive(doc, '[data-select^="season"]', want.season);
+      if (want.episode) allohaDrive(doc, '[data-select^="episode"]', want.episode);
+      const now = allohaRead(doc);
+      const done =
+        (!want.season || now.season === want.season) &&
+        (!want.episode || now.episode === want.episode) &&
+        (!want.translation || now.translation === want.translation);
+      if (done) { onDone?.(true); return; }
+      if (--left > 0) setTimeout(step, ALLOHA_APPLY_INTERVAL_MS);
+      else onDone?.(false); // такой озвучки/серии в нашем плеере нет — сигнализируем хабу
+    };
+    step();
+  },
+};
+
+const ADAPTERS: SiteAdapter[] = [YOUTUBE, JUTSU, KODIK, ALLOHA, PLAYERJS];
 
 export function findAdapter(host: string, doc: Document): SiteAdapter | null {
   return ADAPTERS.find((a) => a.matches(host, doc)) ?? null;
