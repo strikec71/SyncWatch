@@ -153,7 +153,7 @@ export class Room {
     this.broadcastRoster();
   }
 
-  /** Релей STATE/BUFFER/AD/BEAT/PING по решению decide(). */
+  /** Релей STATE/BUFFER/AD/BEAT/CHAT/PING по решению decide(). */
   private relay(entry: Entry, msg: WireMessage): void {
     const d = decide(msg, entry.state, this.peers.size);
     switch (d.kind) {

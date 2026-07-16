@@ -233,6 +233,17 @@ describe('decide — relay decision', () => {
     expect(decide(nav, peer(2), 3).kind).toBe('drop'); // non-host cannot direct-send
   });
 
+  it('broadcasts CHAT from anyone, including detached and non-controller peers in a room of 5', () => {
+    const chat = { type: 'CHAT', code: 'brb-sec', ts: 1 } as WireMessage;
+    // guest (plain, non-host, no control) in a room of 5 — no rights gate for chat.
+    expect(decide(chat, peer(4), 5)).toEqual({ kind: 'broadcast', inject: true });
+    // detached solo viewer still chats.
+    expect(decide(chat, peer(4, { detached: true }), 5)).toEqual({ kind: 'broadcast', inject: true });
+    // free-text variant behaves the same.
+    const text = { type: 'CHAT', text: 'привет', ts: 2 } as WireMessage;
+    expect(decide(text, peer(2), 3)).toEqual({ kind: 'broadcast', inject: true });
+  });
+
   it('drops server→client message types appearing in the inbound stream', () => {
     for (const type of ['ROSTER', 'SNAPSHOT_REQ'] as const) {
       const msg = { type } as unknown as WireMessage;

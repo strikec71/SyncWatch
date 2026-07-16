@@ -132,6 +132,11 @@ export function decide(msg: WireMessage, sender: PeerState, size: number): Relay
     case 'AD':
       return sender.detached ? { kind: 'drop' } : { kind: 'broadcast', inject: true };
 
+    case 'CHAT':
+      // Чат/быстрое сообщение — социальный сигнал. Релеим ВСЕМ без гейта прав и БЕЗ гейта
+      // detached: соло-зритель тоже общается. Сервер остаётся чистым релеем (антиспам — клиент).
+      return { kind: 'broadcast', inject: true };
+
     case 'NAV':
       if (msg.to !== undefined) {
         // Направленный NAV (снапшот новичку) — только host, только адресату.
