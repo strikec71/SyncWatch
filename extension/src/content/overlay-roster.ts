@@ -63,12 +63,26 @@ export function decideRowControls(snapshot: StatusSnapshot, rowId: number): RowC
   };
 }
 
-/** Одна кнопка режима: `Соло` когда синхрон, `Синхрон` когда соло. `next` — что послать в set-mode. */
+/** Одна кнопка режима: «Смотреть соло» когда в синхроне, «Вернуться в синхрон» когда соло.
+ *  `next` — что послать в set-mode. */
 export interface DetachButton { label: string; title: string; next: boolean; }
 export function detachButton(detached: boolean): DetachButton {
   return detached
-    ? { label: 'Синхрон', title: 'вернуться к общему просмотру', next: false }
-    : { label: 'Соло', title: 'смотреть в своём темпе', next: true };
+    ? { label: 'Вернуться в синхрон', title: 'вернуться к общему просмотру', next: false }
+    : { label: 'Смотреть соло', title: 'смотреть в своём темпе', next: true };
+}
+
+/** Число участников с корректной русской формой слова: `N участник(а/ов)`.
+ *  Обычные правила: 1/21/31… → участник; 2-4/22-24… → участника; 5-20/11-14/25… → участников. */
+export function peersLabel(n: number): string {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  let word: string;
+  if (mod100 >= 11 && mod100 <= 14) word = 'участников';
+  else if (mod10 === 1) word = 'участник';
+  else if (mod10 >= 2 && mod10 <= 4) word = 'участника';
+  else word = 'участников';
+  return `${n} ${word}`;
 }
 
 /** Колбэки строки: тумблер контроля (host) и запрос контроля (гость). */
@@ -105,13 +119,13 @@ export function buildRosterRow(
 
   if (ctl.showGrant) {
     row.appendChild(rowBtn(
-      'Контроль',
+      ctl.grantActive ? 'Забрать управление' : 'Передать управление',
       ctl.grantActive ? 'забрать управление' : 'выдать управление',
       ctl.grantActive,
       () => cb.onGrantToggle(peer.id, !ctl.grantActive),
     ));
   } else if (ctl.showRequest) {
-    row.appendChild(rowBtn('Запросить', 'попросить право управления у хоста', false, () => cb.onRequest()));
+    row.appendChild(rowBtn('Запросить управление', 'попросить право управления у хоста', false, () => cb.onRequest()));
   }
   return row;
 }

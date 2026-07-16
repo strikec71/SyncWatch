@@ -12,6 +12,7 @@ import type {
   BeatMessage,
   AdMessage,
   NavMessage,
+  ChatMessage,
   SnapshotReqMessage,
   RosterMessage,
   RequestControlMessage,
@@ -45,6 +46,7 @@ import {
   pushSnapshot,
 } from './sync';
 import { applyRemoteNav } from './nav';
+import { onRemoteChat } from './chat';
 
 /** Чистый расчёт задержки реконнекта: min(CAP, BASE·2^attempt) + джиттер (Фаза A). */
 export function computeBackoff(attempt: number, rand: number = Math.random()): number {
@@ -202,7 +204,7 @@ export function checkWatchdog(s: Session): void {
 /** Простой одной сессии: живой сокет без реальной активности просмотра дольше
  *  IDLE_DISCONNECT_MS → закрываем БЕЗ реконнекта (экономия серверного трафика на
  *  забытой вкладке-паузе). Возврат — только вручную. Сессию не забываем: островок
- *  покажет «не подключено» с пред-заполненной комнатой, готовой к повторному «Войти». */
+ *  покажет «не подключено» с пред-заполненной комнатой, готовой к повторному «Подключиться». */
 export function checkIdle(s: Session): void {
   if (!isIdleExpired({
     connected: s.connected,
@@ -252,6 +254,10 @@ function onWire(s: Session, raw: unknown): void {
       break;
     case 'NAV':
       void applyRemoteNav(s, msg as NavMessage);
+      break;
+    case 'CHAT':
+      // Чат — без гейта detached: соло-зритель тоже видит сообщения комнаты.
+      onRemoteChat(s, msg as ChatMessage);
       break;
     case 'SNAPSHOT_REQ':
       void pushSnapshot(s, msg as SnapshotReqMessage);

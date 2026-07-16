@@ -4,6 +4,7 @@
 import browser from '../shared/browser';
 import { PlayerController } from './player';
 import { StatusBanner } from './banner';
+import { ChatBubbles } from './chat-bubbles';
 import { handleInvite } from './invite';
 import { startNavSync } from './navsync';
 import { Overlay } from './overlay';
@@ -22,6 +23,10 @@ startNavSync();
 
 // Центральный статус-баннер (Фаза 7): только верхний фрейм, независимо от островка.
 const banner = window.top === window ? new StatusBanner() : null;
+
+// Чат-баблы (Фаза 0.7.0): только верхний фрейм, НЕЗАВИСИМО от overlayEnabled (политика
+// баннера) — сообщения партнёров видны даже при скрытом островке и в фуллскрине.
+const bubbles = window.top === window ? new ChatBubbles() : null;
 
 // Островок (единственный UI): одна панель на вкладку — только в верхнем фрейме.
 // Показ = настройка overlayEnabled (тумблер на иконке) И наличие видео в этой вкладке
@@ -83,6 +88,12 @@ browser.runtime.onMessage.addListener((msg: RuntimeMessage, _sender, sendRespons
       break;
     case 'banner':
       banner?.apply(msg); // центральный статус-баннер — только верхний фрейм (Фаза 7)
+      break;
+    case 'chat':
+      bubbles?.push(msg.entry); // чат-бабл партнёра — только верхний фрейм (Фаза 0.7.0)
+      break;
+    case 'pause-local':
+      controller.pauseLocal(); // автопауза быстрого сообщения — локальная пауза (Фаза 0.7.0)
       break;
     case 'get-snapshot':
       sendResponse(controller.snapshot()); // синк новичка при входе

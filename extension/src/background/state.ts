@@ -6,6 +6,7 @@
 // Ни от кого не зависит (только типы) — все остальные модули импортируют отсюда.
 
 import type { RosterPeer, ClientMessage } from '../shared/protocol';
+import type { ChatEntry } from '../shared/messages';
 
 export const KEEPALIVE_ALARM = 'syncwatch-keepalive';
 export const RECONNECT_ALARM = 'syncwatch-reconnect'; // персистентный фолбэк реконнекта (переживает выгрузку SW)
@@ -22,7 +23,7 @@ export const WATCHDOG_SILENCE_MS = 45000;
 // Авто-дисконнект по простою: если нет НИКАКОЙ реальной активности просмотра (beat при
 // воспроизведении, событие плеера, входящий STATE/BEAT) дольше этого — сокет закрывается
 // БЕЗ авто-реконнекта, чтобы не жечь серверный трафик на забытой вкладке-паузе. Возврат —
-// только вручную («Войти»). Порог намеренно большой: пока смотрят (beat каждые ~3с) или
+// только вручную («Подключиться»). Порог намеренно большой: пока смотрят (beat каждые ~3с) или
 // жмут кнопки — таймер сбрасывается; молчит только настоящая пауза/заброшенная вкладка.
 // Отличать от watchdog (тот про мёртвый сокет и РЕКОННЕКТИТ; этот про живой-но-простаивающий
 // и НЕ реконнектит) и от lastRecvAt (тот дёргает PING/roster — здесь не считается активностью).
@@ -120,6 +121,12 @@ export interface Session {
   expectedSig: string | null;
   expectedSigAt: number;
   lastSigSentAt: number;
+  /** Лог чата (Фаза 0.7.0): последние CHAT_LOG_MAX записей. Живёт в сессии, поэтому
+   *  переживает ремаунт островка и перезагрузку вкладки; teardownSocket его НЕ чистит
+   *  (реконнект сохраняет), а ручной disconnect уничтожает Session → лог обнуляется сам. */
+  chatLog: ChatEntry[];
+  /** Метка последнего ОТПРАВЛЕННОГО нами быстрого сообщения — антиспам-кулдаун. */
+  lastChatSentAt: number;
 }
 
 /** Отметить реальную активность просмотра (сброс таймера авто-дисконнекта по простою).
@@ -165,6 +172,8 @@ export function createSession(tabId: number): Session {
     expectedSig: null,
     expectedSigAt: 0,
     lastSigSentAt: 0,
+    chatLog: [],
+    lastChatSentAt: 0,
   };
 }
 

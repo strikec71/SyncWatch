@@ -188,7 +188,7 @@ export function notifyPopup(s: Session): void {
 
 /** Доставить сообщение в островок СВОЕЙ вкладки (верхний фрейм). tabId сессии известен
  *  с момента connect, поэтому всегда адресно (без бродкаста). */
-function sendToOverlays(s: Session, msg: RuntimeMessage): void {
+export function sendToOverlays(s: Session, msg: RuntimeMessage): void {
   browser.tabs.sendMessage(s.tabId, msg, { frameId: 0 }).catch(() => { /* нет оверлея */ });
 }
 

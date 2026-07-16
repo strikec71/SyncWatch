@@ -15,7 +15,7 @@ export const TEMPLATE = `
   * { box-sizing: border-box; }
 
   .panel {
-    width: 250px; color: var(--ink); font-family: var(--sans);
+    width: 280px; color: var(--ink); font-family: var(--sans);
     background: rgba(16,18,24,.82);
     -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
     border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
@@ -34,6 +34,16 @@ export const TEMPLATE = `
   .title { flex: 1; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 2.5px; text-transform: uppercase; }
   .hbtn { background: none; border: none; color: var(--muted); font-size: 12px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 6px; }
   .hbtn:hover { color: var(--ink); background: rgba(255,255,255,.06); }
+  /* Кнопка 💬 в шапке (быстрые сообщения) + бейдж непрочитанных */
+  .chatbtn { position: relative; font-size: 14px; }
+  .chatbtn.disabled { opacity: .4; cursor: not-allowed; }
+  .chatbadge {
+    position: absolute; top: -3px; right: -3px; min-width: 13px; height: 13px; padding: 0 3px;
+    display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+    font-family: var(--mono); font-size: 8px; font-weight: 700; line-height: 1; color: #0b0d12;
+    background: #7cf5ff; border-radius: 999px; box-shadow: 0 0 6px rgba(124,245,255,.6);
+  }
+  .chatbadge[hidden] { display: none; }
 
   /* СИГНАТУРА: живая линия связи под шапкой (видна и в свёрнутом виде) */
   .syncline { position: relative; height: 2px; background: rgba(255,255,255,.05); overflow: hidden; }
@@ -71,7 +81,7 @@ export const TEMPLATE = `
   /* Roster: список участников */
   .roster { display: flex; flex-direction: column; gap: 4px; margin: 9px 0 11px; }
   .prow {
-    display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--ink);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 11px; color: var(--ink);
     background: rgba(255,255,255,.04); border: 1px solid var(--line);
     padding: 4px 8px; border-radius: 8px;
   }
@@ -112,8 +122,9 @@ export const TEMPLATE = `
   button.btn:active { transform: translateY(1px); }
   button.btn:focus-visible { outline: none; border-color: rgba(124,245,255,.55); box-shadow: 0 0 0 2px rgba(124,245,255,.25); }
   .mini { flex: 0 0 auto; padding: 8px 10px; }
-  /* Микро-кнопки в строке roster (Контроль/Запросить) */
-  button.btn.micro { padding: 3px 7px; font-size: 9px; letter-spacing: .4px; flex: none; }
+  /* Микро-кнопки в строке roster (Передать/Забрать/Запросить управление): переносятся
+     на вторую строку ряда (.prow flex-wrap) во всю ширину — длинные лейблы не ломают ряд. */
+  button.btn.micro { padding: 3px 7px; font-size: 9px; letter-spacing: .4px; flex: 1 1 100%; }
   button.btn.micro.on { border-color: rgba(169,160,255,.6); background: rgba(169,160,255,.16); color: #cfc8ff; }
   /* Кнопка режима Соло/Синхрон */
   button.btn.mode { width: 100%; margin-bottom: 10px; }
@@ -153,6 +164,22 @@ export const TEMPLATE = `
   details[open] summary::before { content: '– '; }
   details .field:first-of-type { margin-top: 10px; }
 
+  /* Секция «Чат»: лог сообщений + (пока задизейбленный) ввод */
+  .chatlog {
+    display: flex; flex-direction: column; gap: 4px; margin: 10px 0;
+    max-height: 140px; overflow-y: auto;
+  }
+  .chatlog:empty { display: none; }
+  .crow {
+    font-size: 11px; line-height: 1.35; color: var(--ink); word-break: break-word;
+    background: rgba(255,255,255,.04); border: 1px solid var(--line);
+    border-left: 2px solid rgba(255,255,255,.14); border-radius: 8px; padding: 5px 8px;
+  }
+  .crow.self { border-left-color: #7cf5ff; color: #d7f6ff; }
+  input:disabled, button.btn:disabled {
+    opacity: .5; cursor: not-allowed;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .syncline::before, button.btn.primary, button.btn.primary::before { animation: none !important; }
     .toast { animation: none; }
@@ -162,6 +189,7 @@ export const TEMPLATE = `
   <div class="head" id="h">
     <span class="mark"><i></i></span>
     <span class="title">SyncWatch</span>
+    <button class="hbtn chatbtn disabled" id="chat-open" type="button" title="Подключитесь, чтобы отправлять сообщения">💬<span class="chatbadge" id="chatbadge" hidden></span></button>
     <button class="hbtn" id="m" title="Свернуть">▾</button>
   </div>
   <div class="syncline" id="sync" data-state="off"></div>
@@ -174,29 +202,38 @@ export const TEMPLATE = `
     <span class="eyebrow" style="margin-top:10px">Участники</span>
     <div class="roster" id="roster"></div>
 
-    <button class="btn mode" id="mode" type="button" style="display:none">Соло</button>
+    <button class="btn mode" id="mode" type="button" style="display:none">Смотреть соло</button>
 
     <div class="field">
       <span class="eyebrow">Комната</span>
       <div class="row">
         <input id="room" type="text" autocomplete="off" spellcheck="false" placeholder="код" />
-        <button class="btn mini" id="create" type="button" title="Сгенерировать код комнаты">Создать</button>
+        <button class="btn mini" id="create" type="button" title="Сгенерировать код комнаты">Создать комнату</button>
       </div>
     </div>
 
     <div class="field">
-      <button class="btn" id="invite" type="button" style="width:100%">Позвать</button>
+      <button class="btn" id="invite" type="button" style="width:100%">Пригласить</button>
     </div>
 
     <div class="row">
-      <button class="btn primary" id="c" type="button">Войти</button>
-      <button class="btn" id="d" type="button" style="display:none">Выйти</button>
+      <button class="btn primary" id="c" type="button">Подключиться</button>
+      <button class="btn" id="d" type="button" style="display:none">Отключиться</button>
     </div>
 
-    <label class="chk"><input id="auto" type="checkbox" /> Автовход</label>
+    <label class="chk"><input id="auto" type="checkbox" /> Автоподключение</label>
+
+    <details id="chatbox">
+      <summary>Чат</summary>
+      <div class="chatlog" id="chatlog"></div>
+      <div class="row">
+        <input id="chatinput" type="text" disabled placeholder="Текстовый чат — скоро" />
+        <button class="btn mini" id="chatsend" type="button" disabled>Отправить</button>
+      </div>
+    </details>
 
     <details>
-      <summary>Ещё</summary>
+      <summary>Настройки</summary>
       <div class="field"><span class="eyebrow">Имя устройства</span>
         <input id="dev" type="text" autocomplete="off" spellcheck="false" /></div>
       <div class="field"><span class="eyebrow">Сервер</span>

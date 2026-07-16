@@ -33,6 +33,7 @@ import { onPlayerEvent, onBuffering, onBeat, onAd, onVideoReady } from './sync';
 import { onNavReport, onMediaSig, onMediaApplyFailed, normalizeSyncUrl } from './nav';
 import { notifyEvent, notifyPopup, statusSnapshot } from './roster';
 import { onVideoPresence, queryVideoAvailable, forgetTab } from './presence';
+import { onSendQuickMessage } from './chat';
 
 /** Снимок «вкладка не в комнате» — для get-status от ещё не подключённой вкладки. */
 function emptySnapshot(): StatusSnapshot {
@@ -133,6 +134,14 @@ browser.runtime.onMessage.addListener(
         // (дочерние фреймы могли отрепортить раньше, чем островок подписался на push).
         sendResponse({ available: tabId != null && queryVideoAvailable(tabId) });
         return;
+      case 'send-quick-message':
+        // островок → отправить быстрое сообщение (чат). peekSession: без сессии слать некуда.
+        if (tabId != null) { const s = peekSession(tabId); if (s) onSendQuickMessage(s, msg.code); }
+        return;
+      case 'get-chat-log':
+        // островок при маунте подтягивает лог чата сессии (переживает ремаунт/перезагрузку).
+        sendResponse({ entries: tabId != null ? (peekSession(tabId)?.chatLog ?? []) : [] });
+        return;
     }
   },
 );
@@ -203,7 +212,7 @@ async function syncActionBadge(): Promise<void> {
   } catch { /* action API недоступно — пропускаем */ }
 }
 
-// Авто-подключение теперь per-tab: инвайт-хэш во вкладке (invite.ts) или ручной «Войти».
+// Авто-подключение теперь per-tab: инвайт-хэш во вкладке (invite.ts) или ручной «Подключиться».
 // Глобального «подключить весь браузер к одной комнате» больше нет (сессии независимы).
 browser.runtime.onInstalled.addListener(() => { void syncActionBadge(); });
 browser.runtime.onStartup.addListener(() => { void syncActionBadge(); });

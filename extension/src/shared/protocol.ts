@@ -117,6 +117,22 @@ export interface RequestControlMessage {
   from?: number; // ВСТАВЛЯЕТ СЕРВЕР при релее host'у; на хопе client→server отсутствует.
 }
 
+/** Быстрое сообщение / чат (Фаза 0.7.0). Социальный сигнал — сервер релеит его ВСЕМ БЕЗ
+ *  гейта прав/detach (соло-зритель тоже общается). Передаётся `code` (ключ каталога,
+ *  получатель рендерит локализованный текст+эмодзи; неизвестный код молча игнорируется —
+ *  forward-compat) И/ИЛИ свободный `text` (шаблон будущего текстового чата). Минимум одно
+ *  из них. `from` вставляет сервер при релее. `ts` — стенные часы отправителя, для позиции
+ *  НЕ используется (получатель штампует своё Date.now()); держим для совместимости формы. */
+export interface ChatMessage {
+  type: 'CHAT';
+  code?: string;
+  text?: string;
+  ts: number;
+  from?: number;
+}
+export const CHAT_CODE_MAX = 32;
+export const CHAT_TEXT_MAX = 200;
+
 /** WS keepalive против засыпания SW. Сервер ПОГЛОЩАЕТ его и НЕ релеит. */
 export interface PingMessage {
   type: 'PING';
@@ -133,6 +149,7 @@ export type ClientMessage =
   | BeatMessage
   | AdMessage
   | NavMessage
+  | ChatMessage
   | PingMessage;
 
 export type ServerMessage =
@@ -143,7 +160,8 @@ export type ServerMessage =
   | BufferMessage
   | BeatMessage
   | AdMessage
-  | NavMessage;
+  | NavMessage
+  | ChatMessage;
 
 export type WireMessage = ClientMessage | ServerMessage;
 
@@ -312,6 +330,24 @@ export function parseWire(raw: unknown): WireMessage | null {
       return optInt(obj.from)
         ? { type: 'REQUEST_CONTROL', ...(obj.from !== undefined ? { from: obj.from as number } : {}) }
         : null;
+
+    case 'CHAT': {
+      // Быстрое сообщение (code) и/или свободный текст. Минимум одно из них; капы длин;
+      // from пропускаем как опциональный int (перезапишет сервер). Строгая сборка (паттерн BUFFER).
+      if (!isNum(obj.ts) || !optInt(obj.from)) return null;
+      const hasCode = obj.code !== undefined;
+      const hasText = obj.text !== undefined;
+      if (!hasCode && !hasText) return null;
+      if (hasCode && (!isStr(obj.code) || obj.code.length > CHAT_CODE_MAX)) return null;
+      if (hasText && (!isStr(obj.text) || obj.text.length > CHAT_TEXT_MAX)) return null;
+      return {
+        type: 'CHAT',
+        ...(hasCode ? { code: obj.code as string } : {}),
+        ...(hasText ? { text: obj.text as string } : {}),
+        ts: obj.ts,
+        ...(obj.from !== undefined ? { from: obj.from as number } : {}),
+      };
+    }
 
     case 'PING':
       return isNum(obj.ts) ? { type: 'PING', ts: obj.ts } : null;

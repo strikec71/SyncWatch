@@ -27,6 +27,9 @@ describe('parseWire — round-trip of valid messages', () => {
     { type: 'NAV', scope: 'player', sig: 'kodik|s=1|e=5|t=610', ts: 100 },
     { type: 'REQUEST_CONTROL' },
     { type: 'REQUEST_CONTROL', from: 3 },
+    { type: 'CHAT', code: 'brb-sec', ts: 100 },
+    { type: 'CHAT', text: 'привет', ts: 100 },
+    { type: 'CHAT', code: 'lol', text: 'ха', ts: 100, from: 3 },
     { type: 'PING', ts: 13 },
     {
       type: 'ROSTER',
@@ -144,6 +147,31 @@ describe('parseWire — rejects malformed input', () => {
     expect(parseWire({ type: 'NAV', scope: 'page', url: 'https://a', ts: NaN })).toBeNull();
     expect(parseWire({ type: 'NAV', scope: 'page', url: 'https://a', ts: 1, to: 1.5 })).toBeNull();
     expect(parseWire({ type: 'NAV', scope: 'page', url: 'https://a', ts: 1, from: 2.7 })).toBeNull();
+  });
+
+  it('rejects CHAT with neither code nor text', () => {
+    expect(parseWire(JSON.stringify({ type: 'CHAT', ts: 1 }))).toBeNull();
+  });
+
+  it('rejects CHAT without ts, or with a non-finite ts', () => {
+    expect(parseWire(JSON.stringify({ type: 'CHAT', code: 'x' }))).toBeNull();
+    expect(parseWire({ type: 'CHAT', code: 'x', ts: NaN })).toBeNull();
+  });
+
+  it('rejects CHAT with a code over 32 chars or text over 200 chars', () => {
+    expect(parseWire(JSON.stringify({ type: 'CHAT', code: 'x'.repeat(33), ts: 1 }))).toBeNull();
+    expect(parseWire(JSON.stringify({ type: 'CHAT', text: 'y'.repeat(201), ts: 1 }))).toBeNull();
+  });
+
+  it('rejects CHAT with a non-string code/text or non-integer from', () => {
+    expect(parseWire(JSON.stringify({ type: 'CHAT', code: 42, ts: 1 }))).toBeNull();
+    expect(parseWire(JSON.stringify({ type: 'CHAT', text: 42, ts: 1 }))).toBeNull();
+    expect(parseWire({ type: 'CHAT', code: 'x', ts: 1, from: 1.5 })).toBeNull();
+  });
+
+  it('passes a valid CHAT code/text at the length boundary and keeps from', () => {
+    const ok = parseWire(JSON.stringify({ type: 'CHAT', code: 'x'.repeat(32), text: 'y'.repeat(200), ts: 1, from: 4 }));
+    expect(ok).toEqual({ type: 'CHAT', code: 'x'.repeat(32), text: 'y'.repeat(200), ts: 1, from: 4 });
   });
 
   it('page-NAV does not carry a stray sig, player-NAV does not carry a stray url', () => {

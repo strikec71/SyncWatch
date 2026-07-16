@@ -12,8 +12,9 @@
 import browser from '../shared/browser';
 import { loadSettings, saveSettings, ensureDeviceName, type Settings } from '../shared/settings';
 import type { StatusSnapshot, RuntimeMessage } from '../shared/messages';
-import { friendlyCode, decideRowControls, detachButton, buildRosterRow } from './overlay-roster';
+import { friendlyCode, decideRowControls, detachButton, buildRosterRow, peersLabel } from './overlay-roster';
 import { TEMPLATE } from './overlay-template';
+import { OverlayChat } from './overlay-chat';
 
 const COLLAPSED_KEY = 'syncwatch-overlay-collapsed';
 const POLL_MS = 2000;
@@ -27,6 +28,7 @@ export class Overlay {
   private onMsg: ((msg: RuntimeMessage) => void) | null = null;
   private onStorage: Parameters<typeof browser.storage.onChanged.addListener>[0] | null = null;
   private onFsChange: (() => void) | null = null;
+  private chat: OverlayChat | null = null;         // чат-поверхность (кнопка 💬 + колесо + лог)
   private myName = '';
   private last: StatusSnapshot | null = null;      // последний снимок (для кнопок)
   private requesting = new Set<number>();          // connId'ы гостей с висящим запросом контроля
@@ -81,7 +83,7 @@ export class Overlay {
       await saveSettings({ room: code });
       // Код комнаты — только договорённость об имени; без адреса сервера подключаться некуда.
       if (!this.input('serverUrl').value.trim()) {
-        this.hint(`Комната «${code}» создана — укажите адрес сервера в «Ещё»`);
+        this.hint(`Комната «${code}» создана — укажите адрес сервера в «Настройках»`);
       } else {
         this.hint(`Комната «${code}» создана`);
       }
@@ -121,6 +123,11 @@ export class Overlay {
     try { collapsed = localStorage.getItem(COLLAPSED_KEY) === '1'; } catch { /* ignore */ }
     this.applyCollapsed(collapsed);
 
+    // Чат-поверхность (кнопка 💬 в шапке + колесо + лог секции «Чат»). Лог подтягиваем
+    // из сессии хаба (переживает ремаунт островка/перезагрузку вкладки).
+    this.chat = new OverlayChat(this.shadow, (t) => this.hint(t));
+    this.chat.loadLog();
+
     this.onMsg = (msg) => this.onPush(msg);
     browser.runtime.onMessage.addListener(this.onMsg);
 
@@ -143,6 +150,7 @@ export class Overlay {
       case 'event': this.toast(msg.text, false); break;
       case 'status': this.render(msg); break; // мгновенное обновление roster без ожидания poll
       case 'control-request': this.onControlRequest(msg.from, msg.name); break;
+      case 'chat': this.chat?.onChat(msg.entry); break;
     }
   }
 
@@ -164,6 +172,7 @@ export class Overlay {
 
   /** Снять островок (когда overlayEnabled выключен тумблером на иконке). */
   unmount(): void {
+    this.chat?.destroy(); this.chat = null;
     if (this.pollTimer) { window.clearInterval(this.pollTimer); this.pollTimer = null; }
     if (this.onMsg) { browser.runtime.onMessage.removeListener(this.onMsg); this.onMsg = null; }
     if (this.onStorage) { browser.storage.onChanged.removeListener(this.onStorage); this.onStorage = null; }
@@ -201,7 +210,7 @@ export class Overlay {
     }
   }
 
-  /** Перед «Войти»: сохранить комнату и НЕПУСТОЙ сервер (пустой не пишем — не затираем
+  /** Перед «Подключиться»: сохранить комнату и НЕПУСТОЙ сервер (пустой не пишем — не затираем
    *  сохранённый адрес, если это поле в данной вкладке ещё не заполнялось). */
   private async persistForConnect(): Promise<void> {
     await saveSettings({ room: this.input('room').value.trim() });
@@ -218,14 +227,14 @@ export class Overlay {
     else el.value = String(value);
   }
 
-  /** «Позвать» = ссылка на текущее видео с кодом комнаты И сервером (#syncwatch=…&s=…).
+  /** «Пригласить» = ссылка на текущее видео с кодом комнаты И сервером (#syncwatch=…&s=…).
    *  Сервер обязателен: без него у приглашённого с чистой установкой подключаться некуда
    *  (дефолтного публичного релея нет) — это был баг «ссылка не подключает». */
   private async copyInvite(): Promise<void> {
     const room = this.input('room').value.trim();
     if (!room) { this.hint('Сначала задайте комнату'); return; }
     const server = this.input('serverUrl').value.trim();
-    if (!server) { this.hint('Укажите адрес сервера в «Ещё» — без него приглашение не сработает'); return; }
+    if (!server) { this.hint('Укажите адрес сервера в «Настройках» — без него приглашение не сработает'); return; }
     const link =
       `${location.href.split('#')[0]}#syncwatch=${encodeURIComponent(room)}` +
       `&s=${encodeURIComponent(server)}`;
@@ -251,11 +260,12 @@ export class Overlay {
     const btn = this.$('m');
     btn.textContent = collapsed ? '▸' : '▾';
     btn.title = collapsed ? 'Развернуть' : 'Свернуть';
+    if (!collapsed) this.chat?.resetUnreadIfVisible(); // разворот панели = чат прочитан
   }
 
   /** Отправить connect с комнатой ЭТОЙ вкладки (room per-tab едет в сообщении).
    *  Ошибку от background (нет сервера/комнаты) показываем тостом — раньше ответ молча
-   *  игнорировался, и «Войти» без сервера выглядело как «ничего не произошло». */
+   *  игнорировался, и «Подключиться» без сервера выглядело как «ничего не произошло». */
   private sendConnect(): void {
     const room = this.input('room').value.trim();
     if (!room) return;
@@ -280,7 +290,7 @@ export class Overlay {
     this.render(st);
 
     // Восстановление после выгрузки SW: фон не помнит комнат, поэтому если мы ХОТИМ быть
-    // в комнате (жали «Войти», не «Выйти»), а статус «не подключено» — переотправляем
+    // в комнате (жали «Подключиться», не «Отключиться»), а статус «не подключено» — переотправляем
     // connect. Антидребезг: не чаще раза в 4с (пока соединение поднимается).
     if (
       this.wantConnected && !st?.connected &&
@@ -300,14 +310,15 @@ export class Overlay {
 
     let dot = 'off';
     let text = 'Не подключено';
-    if (st?.connected && st.peerPresent) { dot = 'on'; text = `«${st.room}» · на связи`; }
-    else if (st?.connected) { dot = 'wait'; text = `«${st.room}» · ждём…`; }
+    if (st?.connected && st.peerPresent) { dot = 'on'; text = `«${st.room}» · ${peersLabel(st.peers.length)}`; }
+    else if (st?.connected) { dot = 'wait'; text = `«${st.room}» · ожидаем участников…`; }
     this.$('dot').setAttribute('data-state', dot);
     this.$('sync').setAttribute('data-state', dot);   // сигнатурная линия связи
     this.$('s').textContent = text;
 
     this.renderRoster(st);
     this.renderMode(st);
+    this.chat?.setStatus(st);
   }
 
   /** Список участников (≤10). Имена — только textContent (см. buildRosterRow). */
@@ -318,7 +329,7 @@ export class Overlay {
     if (!st?.connected || peers.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'prow empty';
-      empty.textContent = 'ждём…';
+      empty.textContent = 'ожидаем…';
       box.appendChild(empty);
       return;
     }

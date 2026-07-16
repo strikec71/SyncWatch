@@ -159,6 +159,31 @@ export interface StatusMsg {
   self: number;
 }
 
+/** Одна строка чата в островке (Фаза 0.7.0). `code` — быстрое сообщение из каталога
+ *  (получатель рендерит текст+эмодзи), `text` — свободный текст (будущий чат); минимум одно.
+ *  `name` — имя автора, `self` — это наше сообщение (акцент в логе, без бабла), `ts` —
+ *  ЛОКАЛЬНЫЕ часы получателя (никогда не wire-ts — кросс-машинные часы не синхронны). */
+export interface ChatEntry {
+  code?: string;
+  text?: string;
+  name: string;
+  self: boolean;
+  ts: number;
+}
+
+/** островок → background: отправить быстрое сообщение по коду каталога (Фаза 0.7.0). */
+export interface SendQuickMsg { kind: 'send-quick-message'; code: string; }
+
+/** background → островок (frame 0): новая строка чата (входящая или своя эхом). */
+export interface ChatPushMsg { kind: 'chat'; entry: ChatEntry; }
+
+/** островок → background: отдать текущий лог чата сессии (ответ `{ entries }`). */
+export interface GetChatLogMsg { kind: 'get-chat-log'; }
+
+/** background → content активного фрейма: поставить ЛОКАЛЬНУЮ паузу (автопауза быстрого
+ *  сообщения). Это НЕ applyRemote — штатный `pause`→player-event→STATE уходит комнате. */
+export interface PauseLocalMsg { kind: 'pause-local'; }
+
 export type RuntimeMessage =
   | PlayerEventMsg
   | ApplyMsg
@@ -187,7 +212,11 @@ export type RuntimeMessage =
   | VideoPresenceMsg
   | VideoAvailabilityMsg
   | QueryVideoMsg
-  | StatusMsg;
+  | StatusMsg
+  | SendQuickMsg
+  | ChatPushMsg
+  | GetChatLogMsg
+  | PauseLocalMsg;
 
 /** Снимок состояния хаба для оверлея/теста. Roster-based (Фаза A + `self` Фаза B). */
 export interface StatusSnapshot {

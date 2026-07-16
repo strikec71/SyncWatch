@@ -262,6 +262,14 @@ export class PlayerController {
     return this.pausedByPeerBuffer || this.pausedByPeerAd || this.isAdActive;
   }
 
+  /** Автопауза быстрого сообщения (Фаза 0.7.0): ставим паузу как ЛОКАЛЬНОЕ действие
+   *  пользователя. Эхо-гейт (isApplyingRemote) намеренно НЕ ставим — штатный `pause`→
+   *  onPause→emit→STATE уходит комнате (пауза разрешена всем), партнёры встают И видят причину. */
+  pauseLocal(): void {
+    const v = this.video;
+    if (v && !v.paused) v.pause();
+  }
+
   /** Текущий снимок для синка новичка при входе (запрос get-snapshot от хаба).
    *  `ready:false` (плеер ещё не доиграл метаданные) → хаб отбракует мусорный снимок. */
   snapshot(): PlayerSnapshot {

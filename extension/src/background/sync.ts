@@ -256,7 +256,7 @@ export function requestGateResync(s: Session): void {
   if (now - s.lastGateResyncAt < GATE_RESYNC_THROTTLE_MS) return;
   s.lastGateResyncAt = now;
   sendWire(s, { type: 'MODE', detached: false });
-  notifyEvent(s, 'Управляет хост — плеер выровнен по комнате. Право можно получить кнопкой «Запросить»');
+  notifyEvent(s, 'Управляет хост — плеер выровнен по комнате. Право можно получить кнопкой «Запросить управление»');
 }
 
 // ── Удалённые сообщения → плеер ──────────────────────────────────────────────
