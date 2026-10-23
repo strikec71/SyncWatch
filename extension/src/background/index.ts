@@ -34,6 +34,19 @@ import { onNavReport, onMediaSig, onMediaApplyFailed, normalizeSyncUrl } from '.
 import { notifyEvent, notifyPopup, statusSnapshot } from './roster';
 import { onVideoPresence, queryVideoAvailable, forgetTab } from './presence';
 import { onSendQuickMessage } from './chat';
+import {
+  PRESENCE_ALARM,
+  tickPresence,
+  beatPresence,
+  ensurePresenceAlarm,
+  handleGetFriends,
+  handleAddFriendLink,
+  handleAcceptFriend,
+  handleDeclineFriend,
+  handleRemoveFriend,
+  handleJoinFriend,
+  handleFriendRequestIncoming,
+} from './friends';
 
 /** Снимок «вкладка не в комнате» — для get-status от ещё не подключённой вкладки. */
 function emptySnapshot(): StatusSnapshot {
@@ -61,11 +74,15 @@ browser.runtime.onMessage.addListener(
           const base = normalizeSyncUrl(sender.tab.url);
           if (base) s.pageUrl = base;
         }
-        connect(s, msg.room, msg.serverUrl).then(sendResponse);
+        connect(s, msg.room, msg.serverUrl).then((res) => {
+          sendResponse(res);
+          void beatPresence(); // статус «смотрит» у друзей без ожидания presence-аларма
+        });
         return true; // ответ асинхронный
       }
       case 'disconnect': {
         if (tabId != null) { const s = peekSession(tabId); if (s) { disconnect(s); forgetSession(tabId); } }
+        void beatPresence(); // комнаты больше нет → друзья видят «онлайн», не «смотрит»
         sendResponse({ ok: true });
         return;
       }
@@ -142,6 +159,34 @@ browser.runtime.onMessage.addListener(
         // островок при маунте подтягивает лог чата сессии (переживает ремаунт/перезагрузку).
         sendResponse({ entries: tabId != null ? (peekSession(tabId)?.chatLog ?? []) : [] });
         return;
+      case 'get-friends':
+        // Друзья — глобальные данные (не per-tab): отвечаем сразу, свежесть добьёт tick.
+        void handleGetFriends(sendResponse);
+        return true;
+      case 'add-friend-link':
+        void handleAddFriendLink(sendResponse);
+        return true;
+      case 'accept-friend':
+        void handleAcceptFriend(msg.id);
+        sendResponse({ ok: true });
+        return;
+      case 'decline-friend':
+        void handleDeclineFriend(msg.id);
+        sendResponse({ ok: true });
+        return;
+      case 'remove-friend':
+        void handleRemoveFriend(msg.id);
+        sendResponse({ ok: true });
+        return;
+      case 'join-friend':
+        void handleJoinFriend(msg.id);
+        sendResponse({ ok: true });
+        return;
+      case 'friend-request-incoming':
+        // content (верхний фрейм) поймал ссылку-приглашение в друзья → в инбокс, ждём «Принять».
+        void handleFriendRequestIncoming(msg);
+        sendResponse({ ok: true });
+        return;
     }
   },
 );
@@ -168,6 +213,12 @@ function setControl(s: Session, msg: SetControlMsg): void {
 }
 
 browser.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === PRESENCE_ALARM) {
+    // Друзья: beat «я онлайн вот в комнате» + query статусов/инбокса. HTTP к тому же
+    // Worker, не через WS-релей. Гасит себя ensurePresenceAlarm, когда друзей нет.
+    void tickPresence();
+    return;
+  }
   if (alarm.name === KEEPALIVE_ALARM) {
     // PING (а не BEAT) по всем связанным сессиям — keepalive не должен вызывать ложную
     // коррекцию дрейфа. Сервер PING поглощает и не релеит. Тем же тиком — watchdog.
@@ -214,9 +265,13 @@ async function syncActionBadge(): Promise<void> {
 
 // Авто-подключение теперь per-tab: инвайт-хэш во вкладке (invite.ts) или ручной «Подключиться».
 // Глобального «подключить весь браузер к одной комнате» больше нет (сессии независимы).
-browser.runtime.onInstalled.addListener(() => { void syncActionBadge(); });
-browser.runtime.onStartup.addListener(() => { void syncActionBadge(); });
+browser.runtime.onInstalled.addListener(() => { void syncActionBadge(); void ensurePresenceAlarm(); });
+browser.runtime.onStartup.addListener(() => { void syncActionBadge(); void ensurePresenceAlarm(); });
 browser.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.settings) void syncActionBadge();
+  if (area !== 'local') return;
+  if (changes.settings) void syncActionBadge();
+  // sharePresence живёт в блобе settings; friends — отдельный ключ. Оба влияют на аларм.
+  if (changes.settings || changes.friends) void ensurePresenceAlarm();
 });
 void syncActionBadge(); // при инициализации service worker
+void ensurePresenceAlarm(); // presence-аларм переживает выгрузку SW — восстанавливаем на старте

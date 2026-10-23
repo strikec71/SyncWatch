@@ -44,6 +44,14 @@ export const TEMPLATE = `
     background: #7cf5ff; border-radius: 999px; box-shadow: 0 0 6px rgba(124,245,255,.6);
   }
   .chatbadge[hidden] { display: none; }
+  /* Бейдж «друзей онлайн» в шапке — виден и в компактной пилюле */
+  .fbadge {
+    min-width: 15px; height: 15px; padding: 0 4px; box-sizing: border-box;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1;
+    color: #0b0d12; background: #f5c451; border-radius: 999px; box-shadow: 0 0 6px rgba(245,196,81,.55);
+  }
+  .fbadge[hidden] { display: none; }
 
   /* СИГНАТУРА: живая линия связи под шапкой (видна и в свёрнутом виде) */
   .syncline { position: relative; height: 2px; background: rgba(255,255,255,.05); overflow: hidden; }
@@ -72,6 +80,17 @@ export const TEMPLATE = `
   /* Тело */
   .body { padding: 11px 12px 12px; }
   .panel.collapsed .body { display: none; }
+
+  /* Компактная «пилюля»: нет видео И не подключены → только лого + линия связи + бейдж.
+     ОТДЕЛЬНО от .collapsed (ручной тумблер пользователя) — это авто-состояние; клик по
+     шапке разворачивает (overlay.ts: expandIfCompact). */
+  .panel.compact { width: auto; }
+  .panel.compact .body,
+  .panel.compact .toasts { display: none; }
+  .panel.compact .head { padding: 8px 11px; cursor: pointer; }
+  .panel.compact .title { font-size: 10px; letter-spacing: 2px; }
+  .panel.compact .chatbtn,
+  .panel.compact #m { display: none; }
 
   .status { display: flex; align-items: center; gap: 8px; font-size: 12px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -180,6 +199,29 @@ export const TEMPLATE = `
     opacity: .5; cursor: not-allowed;
   }
 
+  /* Секция «Друзья»: список строк + кнопка «Добавить друга» */
+  .friends { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+  .friends:empty { display: none; }
+  .frow {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 11px; color: var(--ink);
+    background: rgba(255,255,255,.04); border: 1px solid var(--line);
+    padding: 4px 8px; border-radius: 8px;
+  }
+  .frow.empty { color: var(--muted); justify-content: center; font-family: var(--mono); letter-spacing: .6px; }
+  .frow.frq { border-color: rgba(124,245,255,.45); box-shadow: 0 0 0 1px rgba(124,245,255,.14); }
+  .fdot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex: none; }
+  .fdot[data-state="online"] { background: #f5c451; box-shadow: 0 0 6px rgba(245,196,81,.6); }
+  .fdot[data-state="watching"] { background: #7cf5ff; box-shadow: 0 0 6px rgba(124,245,255,.7); }
+  .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fsub {
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: .6px; text-transform: uppercase;
+    color: var(--muted); flex: none;
+  }
+  /* В строке друга микро-кнопки делят строку (короткие лейблы), ✕ — по контенту.
+     (В roster .micro = flex:1 1 100% ради длинных лейблов «Передать управление».) */
+  .frow button.btn.micro { flex: 1 1 auto; padding: 3px 7px; }
+  .frow button.btn.micro.frm { flex: 0 0 auto; padding: 3px 6px; }
+
   @media (prefers-reduced-motion: reduce) {
     .syncline::before, button.btn.primary, button.btn.primary::before { animation: none !important; }
     .toast { animation: none; }
@@ -190,6 +232,7 @@ export const TEMPLATE = `
     <span class="mark"><i></i></span>
     <span class="title">SyncWatch</span>
     <button class="hbtn chatbtn disabled" id="chat-open" type="button" title="Подключитесь, чтобы отправлять сообщения">💬<span class="chatbadge" id="chatbadge" hidden></span></button>
+    <span class="fbadge" id="fbadge" hidden></span>
     <button class="hbtn" id="m" title="Свернуть">▾</button>
   </div>
   <div class="syncline" id="sync" data-state="off"></div>
@@ -232,14 +275,22 @@ export const TEMPLATE = `
       </div>
     </details>
 
+    <details id="friendsbox">
+      <summary>Друзья</summary>
+      <div class="friends" id="friends"></div>
+      <button class="btn" id="friend-add" type="button" style="width:100%">Добавить друга</button>
+    </details>
+
     <details>
       <summary>Настройки</summary>
       <div class="field"><span class="eyebrow">Имя устройства</span>
         <input id="dev" type="text" autocomplete="off" spellcheck="false" /></div>
       <div class="field"><span class="eyebrow">Сервер</span>
         <input id="serverUrl" type="text" autocomplete="off" spellcheck="false" placeholder="wss://…" /></div>
-      <div class="field" style="margin-bottom:0"><span class="eyebrow">Порог рассинхрона, с</span>
+      <div class="field"><span class="eyebrow">Порог рассинхрона, с</span>
         <input id="drift" type="number" step="0.5" min="0" /></div>
+      <label class="chk" style="margin-top:0" title="Показывает друзьям, что вы онлайн и в комнате, и обновляет их статусы у вас. Выключено — обмен presence не идёт в обе стороны.">
+        <input id="share-presence" type="checkbox" /> Обмен статусом с друзьями</label>
     </details>
   </div>
 </div>`;

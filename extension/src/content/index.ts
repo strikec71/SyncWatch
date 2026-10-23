@@ -6,6 +6,7 @@ import { PlayerController } from './player';
 import { StatusBanner } from './banner';
 import { ChatBubbles } from './chat-bubbles';
 import { handleInvite } from './invite';
+import { handleFriendInvite } from './friend-invite';
 import { startNavSync } from './navsync';
 import { Overlay } from './overlay';
 import { loadSettings } from '../shared/settings';
@@ -16,6 +17,10 @@ controller.start();
 
 // Инвайт-ссылка (Фаза 4): если в хэше есть room-код — сохраняем и подключаемся.
 handleInvite();
+
+// Ссылка-приглашение в друзья (#syncwatch-friend=…): кладём запрос в инбокс. Ключ хэша
+// не пересекается с handleInvite(); оба срезают свой хэш до startNavSync().
+handleFriendInvite();
 
 // Синхрон URL страницы (Фаза 2): репорт адреса вкладки в хаб. СТРОГО после handleInvite()
 // (тот срезает инвайт-хэш) — иначе baseline мог бы уехать на /join.
@@ -29,8 +34,9 @@ const banner = window.top === window ? new StatusBanner() : null;
 const bubbles = window.top === window ? new ChatBubbles() : null;
 
 // Островок (единственный UI): одна панель на вкладку — только в верхнем фрейме.
-// Показ = настройка overlayEnabled (тумблер на иконке) И наличие видео в этой вкладке
-// (хотя бы в одном фрейме) — чтобы островок не всплывал на страницах без плеера.
+// Показ = настройка overlayEnabled (тумблер на иконке). Наличие видео БОЛЬШЕ НЕ условие
+// монтирования (нужен доступ к друзьям с любой страницы) — это лишь подсказка островку
+// для компактного режима «пилюли» (см. Overlay.setVideoAvailable).
 if (window.top === window) {
   let overlay: Overlay | null = null;
   let overlayEnabled = false;
@@ -38,17 +44,19 @@ if (window.top === window) {
   let mounted = false;
 
   const reconcile = () => {
-    const show = overlayEnabled && videoAvailable;
-    if (show === mounted) return;
-    mounted = show;
-    if (show) { overlay = new Overlay(); void overlay.mount(); }
-    else { overlay?.unmount(); overlay = null; }
+    const show = overlayEnabled;
+    if (show !== mounted) {
+      mounted = show;
+      if (show) { overlay = new Overlay(); void overlay.mount(); }
+      else { overlay?.unmount(); overlay = null; }
+    }
+    overlay?.setVideoAvailable(videoAvailable);
   };
 
   void loadSettings().then((s) => { overlayEnabled = s.overlayEnabled; reconcile(); });
 
-  // Текущая доступность видео в этой вкладке (дочерний фрейм мог отрепортить раньше,
-  // чем мы подписались на push) — спрашиваем background напрямую.
+  // Доступность видео в этой вкладке — подсказка для компактного режима (дочерний фрейм
+  // мог отрепортить раньше, чем мы подписались на push) — спрашиваем background напрямую.
   void browser.runtime.sendMessage({ kind: 'query-video' })
     .then((r: unknown) => {
       videoAvailable = (r as { available?: boolean } | undefined)?.available ?? false;
@@ -63,7 +71,7 @@ if (window.top === window) {
     reconcile();
   });
 
-  // Живой push доступности видео от background (агрегатор presence.ts).
+  // Живой push доступности видео от background (агрегатор presence.ts) — подсказка компактного режима.
   browser.runtime.onMessage.addListener((msg: RuntimeMessage) => {
     if (msg?.kind === 'video-availability') { videoAvailable = msg.available; reconcile(); }
   });

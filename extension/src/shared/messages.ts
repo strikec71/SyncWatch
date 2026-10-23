@@ -184,6 +184,59 @@ export interface GetChatLogMsg { kind: 'get-chat-log'; }
  *  сообщения). Это НЕ applyRemote — штатный `pause`→player-event→STATE уходит комнате. */
 export interface PauseLocalMsg { kind: 'pause-local'; }
 
+/** ── Друзья + живой presence (Фаза «друзья») ────────────────────────────────
+ *  Друзья — ГЛОБАЛЬНЫЕ данные, не привязаны к вкладке: островок шлёт запросы без
+ *  room-контекста, а background рассылает `friends-status` через
+ *  `browser.runtime.sendMessage` (в отличие от `status`, который строго frameId:0
+ *  своей вкладки). presence-обмен с сервером идёт HTTP-JSON, не через WS-релей. */
+
+/** Готовая строка друга для островка: статус уже строкой (не сырой PresenceView),
+ *  `room` — код текущей комнаты друга (для кнопки «Войти»), '' если не в комнате. */
+export interface FriendRow {
+  id: string;
+  name: string;
+  status: 'offline' | 'online' | 'watching';
+  room: string;
+}
+
+/** Входящий запрос в друзья (ждёт «Принять»/«Отклонить»). */
+export interface InboxRow {
+  id: string;
+  name: string;
+}
+
+/** островок → background: отдать список друзей + инбокс. Ответ: `{ friends, inbox }`
+ *  (те же формы, что в `friends-status`). */
+export interface GetFriendsMsg { kind: 'get-friends'; }
+
+/** background → все островки (runtime-бродкаст): актуальный список друзей + входящие запросы. */
+export interface FriendsStatusMsg {
+  kind: 'friends-status';
+  friends: FriendRow[];
+  inbox: InboxRow[];
+}
+
+/** островок → background: собрать ссылку-приглашение в друзья. Ответ: `{ link }` либо `{ error }`. */
+export interface AddFriendLinkMsg { kind: 'add-friend-link'; }
+
+/** островок → background: принять входящий запрос (инбокс → друзья + рукопожатие на сервер). */
+export interface AcceptFriendMsg { kind: 'accept-friend'; id: string; }
+/** островок → background: отклонить входящий запрос (просто убрать из инбокса). */
+export interface DeclineFriendMsg { kind: 'decline-friend'; id: string; }
+/** островок → background: удалить друга из списка. */
+export interface RemoveFriendMsg { kind: 'remove-friend'; id: string; }
+/** островок → background: открыть новую вкладку и подключиться к комнате друга. */
+export interface JoinFriendMsg { kind: 'join-friend'; id: string; }
+
+/** content (верхний фрейм, friend-invite.ts) → background: открыта ссылка-приглашение в
+ *  друзья (`#syncwatch-friend=<clientId>&n=<имя>&s=<wss>`). Кладём в инбокс, ждём «Принять». */
+export interface FriendRequestIncomingMsg {
+  kind: 'friend-request-incoming';
+  id: string;
+  name: string;
+  serverUrl?: string;
+}
+
 export type RuntimeMessage =
   | PlayerEventMsg
   | ApplyMsg
@@ -216,7 +269,15 @@ export type RuntimeMessage =
   | SendQuickMsg
   | ChatPushMsg
   | GetChatLogMsg
-  | PauseLocalMsg;
+  | PauseLocalMsg
+  | GetFriendsMsg
+  | FriendsStatusMsg
+  | AddFriendLinkMsg
+  | AcceptFriendMsg
+  | DeclineFriendMsg
+  | RemoveFriendMsg
+  | JoinFriendMsg
+  | FriendRequestIncomingMsg;
 
 /** Снимок состояния хаба для оверлея/теста. Roster-based (Фаза A + `self` Фаза B). */
 export interface StatusSnapshot {

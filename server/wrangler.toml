@@ -8,6 +8,16 @@ compatibility_date = "2024-09-23"
 name = "ROOM"
 class_name = "Room"
 
+# Presence «друзья онлайн»: HTTP JSON-хаб, отдельный DO. Storage используем (SQLite-KV):
+# записи presence/inbox с ленивым прунингом по TTL.
+[[durable_objects.bindings]]
+name = "PRESENCE"
+class_name = "Presence"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Presence"]

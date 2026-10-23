@@ -15,6 +15,7 @@ import type { StatusSnapshot, RuntimeMessage } from '../shared/messages';
 import { friendlyCode, decideRowControls, detachButton, buildRosterRow, peersLabel } from './overlay-roster';
 import { TEMPLATE } from './overlay-template';
 import { OverlayChat } from './overlay-chat';
+import { FriendsPanel } from './overlay-friends';
 
 const COLLAPSED_KEY = 'syncwatch-overlay-collapsed';
 const POLL_MS = 2000;
@@ -29,6 +30,9 @@ export class Overlay {
   private onStorage: Parameters<typeof browser.storage.onChanged.addListener>[0] | null = null;
   private onFsChange: (() => void) | null = null;
   private chat: OverlayChat | null = null;         // чат-поверхность (кнопка 💬 + колесо + лог)
+  private friends: FriendsPanel | null = null;     // раздел «Друзья» (presence, приглашения)
+  private videoAvailable = false;                  // есть ли видео на вкладке (подсказка компактного режима)
+  private userExpandedCompact = false;             // пользователь развернул пилюлю вручную (тап по шапке)
   private myName = '';
   private last: StatusSnapshot | null = null;      // последний снимок (для кнопок)
   private requesting = new Set<number>();          // connId'ы гостей с висящим запросом контроля
@@ -62,6 +66,7 @@ export class Overlay {
     this.input('drift').value = String(s.driftThreshold);
     this.input('dev').value = this.myName;
     this.input('auto').checked = s.autoConnect;
+    this.input('share-presence').checked = s.sharePresence;
 
     this.$('c').addEventListener('click', async () => {
       const room = this.input('room').value.trim();
@@ -98,7 +103,7 @@ export class Overlay {
       window.setTimeout(() => void this.refresh(), 200);
     });
 
-    for (const id of ['room', 'serverUrl', 'drift', 'dev', 'auto']) {
+    for (const id of ['room', 'serverUrl', 'drift', 'dev', 'auto', 'share-presence']) {
       this.$(id).addEventListener('change', () => void this.persistField(id));
     }
 
@@ -113,6 +118,7 @@ export class Overlay {
       this.syncField('serverUrl', next.serverUrl);
       this.syncField('drift', next.driftThreshold);
       this.syncField('auto', next.autoConnect);
+      this.syncField('share-presence', next.sharePresence);
       if (next.deviceName) { this.myName = next.deviceName; this.syncField('dev', next.deviceName); }
     };
     browser.storage.onChanged.addListener(this.onStorage);
@@ -128,6 +134,11 @@ export class Overlay {
     this.chat = new OverlayChat(this.shadow, (t) => this.hint(t));
     this.chat.loadLog();
 
+    // Раздел «Друзья» (presence, приглашения) — глобальные данные, приходят через
+    // friends-status в onPush; список запрашиваем сразу.
+    this.friends = new FriendsPanel(this.shadow, (t) => this.hint(t), (t, ok) => void this.copy(t, ok));
+    this.friends.load();
+
     this.onMsg = (msg) => this.onPush(msg);
     browser.runtime.onMessage.addListener(this.onMsg);
 
@@ -141,7 +152,34 @@ export class Overlay {
     document.addEventListener('webkitfullscreenchange', this.onFsChange);
 
     void this.refresh();
+    this.recomputeCompact();
     this.pollTimer = window.setInterval(() => { void this.refresh(); this.keepOnTop(); }, POLL_MS);
+  }
+
+  /** Подсказка из content/index.ts: есть ли на вкладке видео. Влияет только на компактную
+   *  «пилюлю» (нет видео И не подключены → узкий вид). Не условие монтирования. */
+  setVideoAvailable(available: boolean): void {
+    if (available === this.videoAvailable) return;
+    this.videoAvailable = available;
+    if (available) this.userExpandedCompact = false; // видео пришло — вернёмся к обычному виду
+    this.recomputeCompact();
+  }
+
+  /** Пилюля ↔ полный вид. Авто-состояние `.compact`, НЕ трогает ручной `.collapsed`. */
+  private recomputeCompact(): void {
+    const panel = this.shadow?.querySelector('.panel');
+    if (!panel) return;
+    const auto = !this.videoAvailable && !this.last?.connected; // «по смыслу свёрнуто в пилюлю»
+    if (!auto) this.userExpandedCompact = false;                // видео/подключение — пилюля не нужна
+    panel.classList.toggle('compact', auto && !this.userExpandedCompact);
+  }
+
+  /** Тап по шапке в режиме пилюли — развернуть (не тащить). Возвращает true, если сработало. */
+  private expandIfCompact(): boolean {
+    if (!this.shadow?.querySelector('.panel')?.classList.contains('compact')) return false;
+    this.userExpandedCompact = true;
+    this.recomputeCompact();
+    return true;
   }
 
   /** Push от хаба (frame 0): статус, события, запрос контроля, доступное обновление. */
@@ -151,6 +189,7 @@ export class Overlay {
       case 'status': this.render(msg); break; // мгновенное обновление roster без ожидания poll
       case 'control-request': this.onControlRequest(msg.from, msg.name); break;
       case 'chat': this.chat?.onChat(msg.entry); break;
+      case 'friends-status': this.friends?.onStatus(msg.friends, msg.inbox); break;
     }
   }
 
@@ -173,6 +212,7 @@ export class Overlay {
   /** Снять островок (когда overlayEnabled выключен тумблером на иконке). */
   unmount(): void {
     this.chat?.destroy(); this.chat = null;
+    this.friends = null; // без глобальных слушателей/таймеров — уходит вместе с shadow
     if (this.pollTimer) { window.clearInterval(this.pollTimer); this.pollTimer = null; }
     if (this.onMsg) { browser.runtime.onMessage.removeListener(this.onMsg); this.onMsg = null; }
     if (this.onStorage) { browser.storage.onChanged.removeListener(this.onStorage); this.onStorage = null; }
@@ -206,6 +246,10 @@ export class Overlay {
         return;
       case 'auto':
         await saveSettings({ autoConnect: this.input('auto').checked });
+        return;
+      case 'share-presence':
+        // background's storage.onChanged сам пере-взводит/гасит presence-аларм.
+        await saveSettings({ sharePresence: this.input('share-presence').checked });
         return;
     }
   }
@@ -304,6 +348,7 @@ export class Overlay {
   private render(st: StatusSnapshot | null): void {
     if (!this.shadow) return;
     this.last = st;
+    this.recomputeCompact(); // подключение/отключение меняет право на «пилюлю»
     const connected = !!st?.connected;
     (this.$('c') as HTMLElement).style.display = connected ? 'none' : '';
     (this.$('d') as HTMLElement).style.display = connected ? '' : 'none';
@@ -395,6 +440,7 @@ export class Overlay {
     let startX = 0, startY = 0, baseLeft = 0, baseTop = 0, dragging = false;
     handle.addEventListener('pointerdown', (e) => {
       if ((e.target as HTMLElement).closest('button')) return;
+      if (this.expandIfCompact()) return; // в пилюле тап по шапке разворачивает, не тащит
       dragging = true;
       const rect = host.getBoundingClientRect();
       baseLeft = rect.left; baseTop = rect.top;
