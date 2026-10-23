@@ -40,6 +40,7 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -49,7 +50,9 @@ jobs:
           cache-dependency-path: extension/package-lock.json
       - run: npm ci
         working-directory: extension
-      - run: npx playwright install --with-deps chromium
+      # The hosted runner already provides Chrome's system libraries. Avoid an
+      # unrelated apt upgrade before downloading the pinned Playwright browser.
+      - run: npx playwright install chromium
         working-directory: extension
       - run: npm run test:browser
         working-directory: extension

@@ -4,6 +4,11 @@ import browser from './browser';
 import { publicKeyId, publicKeyShape, type SigningIdentity } from './identity';
 import { normalizeServerUrl } from './validation';
 
+// The release build embeds the endpoint only after the deployment passes its
+// health/WebSocket checks. Local source builds may use a manually chosen relay.
+declare const __SYNCWATCH_SERVER_URL__: string;
+const bundledServer = typeof __SYNCWATCH_SERVER_URL__ === 'string' ? __SYNCWATCH_SERVER_URL__ : '';
+
 export interface Settings {
   /** Базовый URL сервера, например wss://syncwatch-signal.<subdomain>.workers.dev */
   serverUrl: string;
@@ -23,11 +28,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  // Пусто НАМЕРЕННО: общего публичного релея по умолчанию нет. Каждый поднимает свой
-  // (см. docs/PUBLISHING.md / инструкцию self-host) и вписывает адрес в поле «Сервер»,
-  // либо получает его автоматически из инвайт-ссылки /join (#r=код&s=сервер). Без адреса
-  // connect() вернёт «Не задан адрес сервера» — это ожидаемо до первой настройки/приглашения.
-  serverUrl: '',
+  serverUrl: normalizeServerUrl(bundledServer) || '',
   room: '',
   driftThreshold: 2.0,
   autoConnect: true,
@@ -61,7 +62,7 @@ export async function loadSettings(): Promise<Settings> {
   const stored = await browser.storage.local.get('settings');
   const raw = (stored.settings && typeof stored.settings === 'object' ? stored.settings : {}) as Partial<Settings>;
   return {
-    serverUrl: typeof raw.serverUrl === 'string' ? normalizeServerUrl(raw.serverUrl) || '' : '',
+    serverUrl: typeof raw.serverUrl === 'string' ? normalizeServerUrl(raw.serverUrl) || '' : DEFAULT_SETTINGS.serverUrl,
     room: typeof raw.room === 'string' ? raw.room.slice(0, 128) : '',
     deviceName: typeof raw.deviceName === 'string' ? raw.deviceName.slice(0, 64) : '',
     driftThreshold: typeof raw.driftThreshold === 'number' && Number.isFinite(raw.driftThreshold) ? Math.max(0.25, Math.min(10, raw.driftThreshold)) : DEFAULT_SETTINGS.driftThreshold,

@@ -7,10 +7,11 @@
 1. В `strikec71/SyncWatch` добавьте **Settings → Secrets and variables → Actions → Repository secrets**:
    - `CLOUDFLARE_API_TOKEN`: Cloudflare API token по шаблону **Edit Cloudflare Workers**, ограниченный нужным аккаунтом.
    - `CLOUDFLARE_ACCOUNT_ID`: Account ID аккаунта с существующим Worker `syncwatch-signal`.
-2. Workflow **Release SyncWatch** запускается тегом `v0.8.0` или вручную из Actions. Он проверяет сервер, расширение и Chromium UI, собирает ZIP и `SHA256SUMS`, создает **draft** GitHub Release, затем разворачивает сервер из того же commit.
+2. Workflow **Release SyncWatch** запускается тегом `v0.8.0` или вручную из Actions. Он проверяет сервер, расширение и Chromium UI, разворачивает сервер из того же commit и проверяет его. Только затем он встраивает проверенный адрес в Chrome ZIP и создает **draft** GitHub Release с `SHA256SUMS`.
 3. Секреты передаются только Wrangler через environment. Не добавлять их в код, ZIP, issue или сообщения. GitHub `production` environment может требовать отдельного разрешения, если владелец настроил такое правило.
 4. Если секретов еще нет, job `deploy-server` завершается понятной ошибкой и ничего не разворачивает. После добавления секретов перезапустите failed jobs того же запуска. Не меняйте тег уже опубликованной версии.
 5. Проверка после деплоя требует `/healthz` с серверной версией **0.4.0** и точным commit SHA, доступную `/privacy` и успешный WebSocket JOIN в новой изолированной тестовой комнате. Для собственного домена задайте Actions variable `SYNCWATCH_SERVER_URL`; для workers.dev URL извлекается из вывода Wrangler.
+6. В новой установке адрес сервера уже заполнен. Сохраненный адрес пользователя не заменяется. Release job не собирает магазинный ZIP без успешно проверенного сервера. Для воспроизведения ZIP локально используйте Node 24 и `SYNCWATCH_SERVER_URL=https://<адрес-проверенного-Worker> npm run package` в `extension`; встроенный WSS-адрес также записан в `release-config.json` внутри ZIP. Сборки CI без этой переменной предназначены для разработки, не для магазина.
 
 Миграции Durable Objects `v1` (Room) и `v2` (Presence) сохранены. Не удалять или переименовывать namespace/миграции при повторном выпуске. При сбое health check сначала проверить logs и миграции; автоматический откат с удалением данных не выполняется.
 

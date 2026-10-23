@@ -1,6 +1,13 @@
 // Сборка только Chrome MV3 в dist/chrome.
 import * as esbuild from 'esbuild';
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { normalizeServerUrl } from './src/shared/validation.ts';
+
+const configuredServer = process.env.SYNCWATCH_SERVER_URL || '';
+const defaultServer = configuredServer ? normalizeServerUrl(configuredServer) : '';
+if (configuredServer && (!defaultServer || new URL(defaultServer).protocol !== 'wss:' || new URL(defaultServer).pathname !== '/')) {
+  throw new Error('SYNCWATCH_SERVER_URL must be an HTTPS/WSS server origin without credentials, query or fragment');
+}
 
 const watch = process.argv.includes('--watch');
 if (process.argv.some(arg => !['--chrome', '--watch'].includes(arg) && arg.startsWith('--'))) throw new Error('Поддерживается только сборка Chrome');
@@ -15,6 +22,7 @@ async function buildTarget(target) {
   await mkdir(outdir, { recursive: true });
   await cp(manifestSrc, `${outdir}/manifest.json`);
   await cp('icons', `${outdir}/icons`, { recursive: true });
+  await writeFile(`${outdir}/release-config.json`, JSON.stringify({ serverUrl: defaultServer }, null, 2) + '\n');
 
   const ctx = await esbuild.context({
     entryPoints: {
@@ -27,6 +35,7 @@ async function buildTarget(target) {
     target: 'chrome120',
     outdir,
     logLevel: 'info',
+    define: { __SYNCWATCH_SERVER_URL__: JSON.stringify(defaultServer) },
   });
 
   if (watch) {

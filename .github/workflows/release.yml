@@ -12,7 +12,7 @@ jobs:
   verify:
     uses: ./.github/workflows/verify.yml
   prepare:
-    needs: verify
+    needs: [verify, deploy-server]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -27,8 +27,13 @@ jobs:
           cache-dependency-path: extension/package-lock.json
       - run: npm ci
         working-directory: extension
-      - run: npm run package
+      - name: Build store package with the verified default server
+        run: |
+          test -n "$SYNCWATCH_SERVER_URL"
+          npm run package
         working-directory: extension
+        env:
+          SYNCWATCH_SERVER_URL: ${{ needs.deploy-server.outputs.server-url }}
       - name: Create or update draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,9 +56,11 @@ jobs:
             extension/dist/packages/*.zip
             extension/dist/packages/SHA256SUMS
   deploy-server:
-    needs: prepare
+    needs: verify
     runs-on: ubuntu-latest
     environment: production
+    outputs:
+      server-url: ${{ steps.deploy.outputs.server_url }}
     concurrency:
       group: syncwatch-production-server
       cancel-in-progress: false
@@ -74,6 +81,7 @@ jobs:
       - run: npm ci
         working-directory: server
       - name: Deploy the verified server
+        id: deploy
         working-directory: server
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -1,5 +1,5 @@
 // Check the exact deployed revision and an isolated room; never use a user room.
-import { readFileSync } from 'node:fs';
+import { readFileSync, appendFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 const [target, expectedRevision] = process.argv.slice(2);
 if (!target || !/^[a-f0-9]{40}$/.test(expectedRevision || '')) throw new Error('Usage: node scripts/check-deployment.mjs <url-or-wrangler-log> <commit-sha>');
@@ -34,3 +34,5 @@ try {
   });
 } finally { socket.close(1000,'release check complete'); }
 console.log(JSON.stringify({url:base.origin,...metadata,privacy:'ok',websocket:'ok'}));
+// A release build may consume this output only after every check above passed.
+if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `server_url=${base.origin}\n`);
