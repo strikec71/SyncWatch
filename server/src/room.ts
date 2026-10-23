@@ -1,245 +1,150 @@
-// Durable Object «Room»: держит до 10 сокетов одной комнаты и релеит между ними.
-// Вся логика решений — в roomLogic.ts (чисто, тестируемо). Здесь только обвязка сокетов:
-// назначение connId, roster-карта, рассылка ROSTER, инъекция `from`, снапшот-реквесты.
-// Сервер — defense-in-depth: тот же permission-гейт дублируется на клиенте.
-
-import { parseWire } from '../../extension/src/shared/protocol';
-import type {
-  ControlMessage,
-  JoinMessage,
-  ModeMessage,
-  WireMessage,
-} from '../../extension/src/shared/protocol';
-import { decide, electHost, shapeRoster, staleConnIds } from './roomLogic';
+// Ordered, bounded room relay. Only joined clients participate in elections.
+import { parseWire, MAX_WIRE_LENGTH } from '../../extension/src/shared/protocol';
+import type { JoinMessage, StateMessage, WireMessage } from '../../extension/src/shared/protocol';
+import { decide, electHost, shapeRoster } from './roomLogic';
 import type { PeerState } from './roomLogic';
-
-const MAX_PEERS = 10;
-
-// Реапинг «мёртвых» сокетов: участник, молчащий дольше — считается отвалившимся, даже если
-// событие close не пришло (полу-открытый TCP / выгрузка MV3 SW). Порог с запасом БОЛЬШЕ
-// клиентского keepalive-PING (Chrome ~30с, Firefox ~60с), чтобы НЕ выгнать живого-но-паузного
-// участника: 2 мин = терпим 1–3 пропущенных пинга. Активный зритель шлёт BEAT/STATE чаще.
-const STALE_PEER_MS = 120000;
-
+const MAX_PEERS = 10, STALE_MS = 180_000, JOIN_TIMEOUT_MS = 10_000;
 interface Entry {
-  ws: WebSocket;
-  state: PeerState;
-  /** Date.now() последнего входящего от этого сокета (любое сообщение, вкл. PING). */
-  lastSeenAt: number;
+  ws: WebSocket; state: PeerState; joined: boolean; lastSeenAt: number; acceptedAt: number;
+  tokens: number; budgetAt: number; lastSnapshotAt: number; lastChatAt: number;
 }
-
 export class Room {
   private peers = new Map<number, Entry>();
-  private nextConnId = 1; // монотонный per-room; никогда не переиспользуется
-  private pendingReap = new Set<WebSocket>(); // сокеты, чей send бросил — вычистить после рассылки
-
-  // state нужен сигнатуре конструктора DO, но хранилище мы не используем (чистый релей).
-  constructor(_state: DurableObjectState, _env: unknown) {}
-
+  private nextConnId = 1;
+  private revision = 0;
+  private lastState: StateMessage | null = null;
+  private lastStateAt = 0;
+  constructor(private context: DurableObjectState, _env: unknown) {}
   async fetch(request: Request): Promise<Response> {
-    if (request.headers.get('Upgrade') !== 'websocket') {
-      return new Response('Expected WebSocket', { status: 426 });
-    }
-
-    const pair = new WebSocketPair();
-    const client = pair[0];
-    const server = pair[1];
-    this.accept(server);
-
-    return new Response(null, { status: 101, webSocket: client });
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
+    const pair = new WebSocketPair(); this.accept(pair[1]);
+    return new Response(null, { status: 101, webSocket: pair[0] });
   }
-
   private accept(ws: WebSocket): void {
-    ws.accept();
-
-    if (this.peers.size >= MAX_PEERS) {
-      ws.close(1013, 'room full');
-      return;
-    }
-
-    const connId = this.nextConnId++;
+    this.reapDead(); ws.accept();
+    if (this.peers.size >= MAX_PEERS) { ws.close(1013, 'room full'); return; }
+    const now = Date.now(), connId = this.nextConnId++;
     const entry: Entry = {
-      ws,
-      state: { connId, name: '', isHost: false, hasControl: false, detached: false },
-      lastSeenAt: Date.now(),
+      ws, state: { connId, name: '', isHost: false, hasControl: false, detached: false, buffering: false, ad: false },
+      joined: false, acceptedAt: now, lastSeenAt: now, tokens: 40, budgetAt: now, lastSnapshotAt: 0, lastChatAt: -Infinity,
     };
     this.peers.set(connId, entry);
-
-    ws.addEventListener('message', (evt: MessageEvent) => {
-      if (typeof evt.data === 'string') this.handleMessage(entry, evt.data);
-    });
-    const done = () => this.cleanup(entry);
-    ws.addEventListener('close', done);
-    ws.addEventListener('error', done);
+    ws.addEventListener('message', evt => { if (typeof evt.data === 'string') this.handleMessage(entry, evt.data); else this.remove(entry, 1003, 'text messages only'); });
+    ws.addEventListener('close', () => { try { ws.close(); } catch {} this.cleanup(entry); });
+    ws.addEventListener('error', () => this.cleanup(entry));
+    this.scheduleSweep();
   }
-
-  private handleMessage(entry: Entry, raw: string): void {
-    const msg = parseWire(raw); // валидация на границе; мусор → игнор
-    if (!msg) return;
-    entry.lastSeenAt = Date.now(); // живость: обновляем ДО обработки (PING тоже считается)
-
-    this.dispatch(entry, msg);
-
-    // После рассылки — вычищаем мёртвые сокеты: те, чей send бросил (pendingReap), и молчащие
-    // дольше порога (сюда попадает «призрак», чей close не пришёл). Раз на сообщение — дёшево (≤10).
-    this.reapDead();
-  }
-
-  private dispatch(entry: Entry, msg: WireMessage): void {
-    switch (msg.type) {
-      case 'JOIN':
-        this.onJoin(entry, msg);
-        return;
-      case 'MODE':
-        this.onMode(entry, msg);
-        return;
-      case 'CONTROL':
-        this.onControl(entry, msg);
-        return;
-      default:
-        this.relay(entry, msg);
-        return;
-    }
-  }
-
-  /** Реапинг мёртвых участников: сначала те, чей send бросил (pendingReap), затем молчащие
-   *  дольше STALE_PEER_MS (staleConnIds). Удаляем без ожидания (не)приходящего close-события,
-   *  затем один раз переизбираем host и рассылаем актуальный roster. */
-  private reapDead(): void {
-    const dead: number[] = [];
-    for (const [id, e] of this.peers) if (this.pendingReap.has(e.ws)) dead.push(id);
-    this.pendingReap.clear();
-
+  async alarm(): Promise<void> { this.reapDead(); if (this.peers.size) this.scheduleSweep(); }
+  private scheduleSweep(): void { void this.context.storage?.setAlarm(Date.now() + JOIN_TIMEOUT_MS); }
+  private handleMessage(e: Entry, raw: string): void {
+    if (!this.peers.has(e.state.connId)) return;
+    if (raw.length > MAX_WIRE_LENGTH) { this.remove(e, 1009, 'message too large'); return; }
     const now = Date.now();
-    const stale = staleConnIds(
-      [...this.peers.values()].map((e) => ({ connId: e.state.connId, lastSeenAt: e.lastSeenAt })),
-      now,
-      STALE_PEER_MS,
-    );
-    for (const id of stale) if (!dead.includes(id)) dead.push(id);
-    if (dead.length === 0) return;
-
-    for (const id of dead) {
-      const e = this.peers.get(id);
-      if (!e) continue;
-      try { e.ws.close(1001, 'stale'); } catch { /* уже мёртв */ }
-      this.peers.delete(id); // вручную: close-событие могло не прийти (полу-открытый сокет)
+    e.tokens = Math.min(40, e.tokens + (now - e.budgetAt) / 100); e.budgetAt = now;
+    if (e.tokens < 1) { this.remove(e, 1008, 'rate limit'); return; } e.tokens--;
+    const msg = parseWire(raw); if (!msg) return;
+    e.lastSeenAt = now;
+    if (msg.type === 'JOIN') {
+      if (!e.joined) this.onJoin(e, msg);
+      else if (e.state.name !== msg.name) { e.state.name = msg.name; this.broadcastRoster(); }
+      return;
     }
-    if (this.peers.size > 0) { this.reelectHost(); this.broadcastRoster(); }
-  }
+    if (!e.joined) return;
+    this.reapDead(); if (!this.peers.has(e.state.connId)) return;
+    if (msg.type === 'MODE') {
+      e.state.detached = msg.detached;
+      if (msg.detached) { e.state.buffering = false; e.state.ad = false; }
+      this.reelectHost(); this.broadcastRoster();
+      if (!msg.detached && now - e.lastSnapshotAt >= 500) {
+        if (e.state.isHost) { e.lastSnapshotAt = now; for (const target of this.peers.values()) this.requestSnapshot(target); }
+        else this.requestSnapshot(e);
 
-  /** JOIN: закрепляем имя, переизбираем host, рассылаем ROSTER, просим у host снапшот новичку. */
-  private onJoin(entry: Entry, msg: JoinMessage): void {
-    entry.state.name = msg.name;
-    const host = this.reelectHost();
-    this.broadcastRoster();
-    this.requestSnapshotIfPeer(entry, host);
-  }
-
-  /** MODE: переключаем detach, переизбираем host (detached-host заменяется), при un-detach просим снапшот. */
-  private onMode(entry: Entry, msg: ModeMessage): void {
-    entry.state.detached = msg.detached;
-    const host = this.reelectHost();
-    this.broadcastRoster();
-    if (!msg.detached) this.requestSnapshotIfPeer(entry, host);
-  }
-
-  /** CONTROL: только host выдаёт/забирает право управления. */
-  private onControl(entry: Entry, msg: ControlMessage): void {
-    if (!entry.state.isHost) return;
-    const target = this.peers.get(msg.target);
-    if (!target) return;
-    target.state.hasControl = msg.action === 'grant';
-    this.broadcastRoster();
-  }
-
-  /** Релей STATE/BUFFER/AD/BEAT/CHAT/PING по решению decide(). */
-  private relay(entry: Entry, msg: WireMessage): void {
-    const d = decide(msg, entry.state, this.peers.size);
-    switch (d.kind) {
-      case 'consume':
-        // PING keepalive: эхо-понг ТОЛЬКО отправителю (не фанаут). Обновляет его
-        // lastRecvAt, чтобы watchdog не рвал здоровое-но-тихое соединение. Дрейф не
-        // трогает — это PING, а не BEAT (см. фикс ложного реконнекта, чекпоинт A).
-        if (msg.type === 'PING') this.trySend(entry.ws, this.serialize(msg, null));
-        return;
-      case 'drop':
-        return;
-      case 'toHost': {
-        // REQUEST_CONTROL → только текущему host, from = проситель. Host — по флагу isHost
-        // (держится корректным reelectHost при каждом join/leave/mode; НЕ переизбираем тут, RB1).
-        const host = [...this.peers.values()].find((e) => e.state.isHost);
-        if (!host || host.state.connId === entry.state.connId) return; // нет host / сам host — молча роняем
-        this.trySend(host.ws, this.serialize(msg, d.target));
-        return;
       }
-      case 'broadcast': {
-        const data = this.serialize(msg, d.inject ? entry.state.connId : null);
-        for (const [id, e] of this.peers) {
-          if (id !== entry.state.connId) this.trySend(e.ws, data);
-        }
-        return;
+      return;
+    }
+    if (msg.type === 'CONTROL') {
+      if (!e.state.isHost) return;
+      const target = this.peers.get(msg.target); if (!target?.joined || target.state.isHost) return;
+      target.state.hasControl = msg.action === 'grant'; this.broadcastRoster(); return;
+    }
+    this.relay(e, msg);
+  }
+  private onJoin(e: Entry, msg: JoinMessage): void {
+    e.joined = true; e.state.name = msg.name;
+    this.reelectHost(); this.broadcastRoster(); this.requestSnapshot(e);
+  }
+  private relay(e: Entry, msg: WireMessage): void {
+    if (msg.type === 'CHAT') {
+      if (Date.now() - e.lastChatAt < 1000) return;
+      e.lastChatAt = Date.now();
+    }
+    const d = decide(msg, e.state, this.states().length); if (d.kind === 'drop') return;
+    if (d.kind === 'consume') { if (msg.type === 'PING') this.send(e, msg); return; }
+    if (d.kind === 'toHost') {
+      const host = [...this.peers.values()].find(p => p.joined && p.state.isHost);
+      if (host && host !== e) this.send(host, { ...msg, from: e.state.connId }); return;
+    }
+    if (d.kind === 'directed') {
+      const target = this.peers.get(d.target); if (!target?.joined || target.state.detached) return;
+      // Never stamp an asynchronous old snapshot with a newer revision.
+      if ('revision' in msg && msg.revision !== undefined && msg.revision !== this.revision) { this.requestSnapshot(target); return; }
+      this.send(target, { ...msg, from: e.state.connId, revision: this.revision }); return;
+    }
+    let out: WireMessage = { ...msg, from: e.state.connId } as WireMessage;
+    if (msg.type === 'STATE') {
+      const pauseOnly = (msg.action === 'pause' && msg.pauseOnly === true) || (this.states().length >= 3 && !e.state.isHost && !e.state.hasControl);
+      const { pauseOnly: _clientFlag, ...state } = msg;
+      out = { ...state, from: e.state.connId, revision: ++this.revision, ...(pauseOnly ? { pauseOnly: true, paused: true } : {}) };
+      if (pauseOnly && this.lastState) {
+        const advance = this.lastState.paused ? 0 : Math.max(0, Date.now() - this.lastStateAt) / 1000 * (this.lastState.rate ?? 1);
+        out = { ...out, currentTime: this.lastState.currentTime + advance, rate: this.lastState.rate } as StateMessage;
       }
-      case 'directed': {
-        const target = this.peers.get(d.target);
-        if (!target) return; // R2: адресат ушёл — молча роняем, НИКОГДА не бродкастим снапшот
-        this.trySend(target.ws, this.serialize(msg, d.inject ? entry.state.connId : null));
-        return;
-      }
+      this.lastState = out as StateMessage; this.lastStateAt = Date.now();
+    }
+    if (msg.type === 'NAV') { out = { ...msg, from: e.state.connId, revision: ++this.revision }; this.lastState = null; }
+    if (msg.type === 'BEAT') {
+      if (msg.revision !== undefined && msg.revision !== this.revision) return;
+      out = { ...msg, from: e.state.connId, revision: this.revision };
+      if (this.lastState && !this.lastState.paused) { this.lastState.currentTime = msg.currentTime; this.lastStateAt = Date.now(); }
+    }
+    if (msg.type === 'BUFFER') e.state.buffering = msg.buffering;
+    if (msg.type === 'AD') e.state.ad = msg.ad;
+    // Ordered commands also acknowledge the optimistic sender.
+    for (const other of [...this.peers.values()]) {
+      if (other.joined && (other !== e || msg.type === 'STATE' || msg.type === 'NAV')) this.send(other, out);
     }
   }
-
-  /** SNAPSHOT_REQ хосту, если новичок/re-sync не сам host. */
-  private requestSnapshotIfPeer(entry: Entry, host: number | null): void {
-    if (host === null || host === entry.state.connId) return;
-    const h = this.peers.get(host);
-    if (h) this.trySend(h.ws, JSON.stringify({ type: 'SNAPSHOT_REQ', target: entry.state.connId }));
+  private requestSnapshot(e: Entry): void {
+    if (!e.joined || e.state.detached) return;
+    const host = [...this.peers.values()].find(p => p.joined && p.state.isHost && !p.state.detached);
+    if (!host || host === e) return;
+    e.lastSnapshotAt = Date.now(); this.send(host, { type: 'SNAPSHOT_REQ', target: e.state.connId, revision: this.revision });
   }
-
-  /** Переизбрать host по roomLogic.electHost и проставить флаги isHost. */
-  private reelectHost(): number | null {
-    const states = this.states();
-    const host = electHost(states);
-    for (const e of this.peers.values()) {
-      e.state.isHost = host !== null && e.state.connId === host;
-    }
-    return host;
+  private states(): PeerState[] { return [...this.peers.values()].filter(e => e.joined).map(e => e.state); }
+  private reelectHost(): void {
+    const host = electHost(this.states());
+    for (const e of this.peers.values()) e.state.isHost = e.joined && e.state.connId === host;
   }
-
-  /** Разослать каждому персональный ROSTER (свой self). */
   private broadcastRoster(): void {
     const states = this.states();
-    for (const e of this.peers.values()) {
-      this.trySend(e.ws, JSON.stringify(shapeRoster(states, e.state.connId)));
+    for (const e of [...this.peers.values()]) if (e.joined) this.send(e, shapeRoster(states, e.state.connId));
+  }
+  private reapDead(): void {
+    const now = Date.now(); let changed = false;
+    for (const e of [...this.peers.values()]) {
+      if ((!e.joined && now - e.acceptedAt >= JOIN_TIMEOUT_MS) || now - e.lastSeenAt >= STALE_MS) {
+        this.peers.delete(e.state.connId); changed ||= e.joined;
+        try { e.ws.close(1001, 'expired'); } catch {}
+      }
     }
+    if (changed) { this.reelectHost(); this.broadcastRoster(); }
   }
-
-  /** Уход участника: удаляем, переизбираем host, рассылаем ROSTER остатку. */
-  private cleanup(entry: Entry): void {
-    if (!this.peers.delete(entry.state.connId)) return;
-    if (this.peers.size === 0) return; // пусто — DO простаивает, чистить нечего
-    this.reelectHost();
-    this.broadcastRoster();
+  private remove(e: Entry, code: number, reason: string): void { try { e.ws.close(code, reason); } catch {} this.cleanup(e); }
+  private cleanup(e: Entry): void {
+    if (!this.peers.delete(e.state.connId)) return; this.reelectHost(); this.broadcastRoster();
   }
-
-  private states(): PeerState[] {
-    return [...this.peers.values()].map((e) => e.state);
-  }
-
-  /** Сериализация с инъекцией from (перезапись любого клиентского from → санитайз). */
-  private serialize(msg: WireMessage, from: number | null): string {
-    if (from === null) return JSON.stringify(msg);
-    return JSON.stringify({ ...(msg as unknown as Record<string, unknown>), from });
-  }
-
-  private trySend(ws: WebSocket, data: string): void {
-    try {
-      ws.send(data);
-    } catch {
-      // Сокет мёртв — НЕ ждём (не)приходящего close: помечаем на реапинг. Не удаляем прямо
-      // здесь, т.к. trySend зовётся ВНУТРИ цикла рассылки (мутация peers на ходу). reapDead()
-      // в конце handleMessage вычистит помеченные и разошлёт свежий roster.
-      this.pendingReap.add(ws);
-    }
+  private send(e: Entry, msg: unknown): void {
+    try { e.ws.send(JSON.stringify(msg)); }
+    catch { queueMicrotask(() => this.cleanup(e)); }
   }
 }

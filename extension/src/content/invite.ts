@@ -1,63 +1,49 @@
-// Обработка инвайт-ссылок (Фаза 4): подключение в один клик.
-// Партнёр открывает ссылку с room-кодом в хэше — мы сохраняем настройки и просим
-// background подключиться. Два формата:
-//   • страница /join: #r=<код>&s=<wss-сервер>  (универсальная ссылка-приглашение)
-//   • любой URL видео: #syncwatch=<код>          (server — ранее сохранённый; дефолта нет)
-// Запускать только в верхнем фрейме — хэш живёт на адресе вкладки.
-
 import browser from '../shared/browser';
-import { saveSettings } from '../shared/settings';
+import { showFloatingLayer, removeFloatingLayer } from './floating-layer';
+import { loadSettings } from '../shared/settings';
+import { normalizeServerUrl } from '../shared/validation';
+import { validRoom } from '../shared/protocol';
+
+export function parseInvite(href: string, namedPage = false): { room: string; serverUrl?: string } | null {
+  const url = new URL(href);
+  const params = new URLSearchParams(url.hash.slice(1));
+  const room = params.get('syncwatch') || (namedPage ? params.get('r') || url.pathname.match(/^\/r\/([^/]+)\/?$/)?.[1] : null);
+  if (!validRoom(room)) return null;
+  const raw = params.get('s') || (namedPage ? url.origin : undefined);
+  const serverUrl = raw ? normalizeServerUrl(raw) : undefined;
+  if (serverUrl === null) return null;
+  return { room, ...(serverUrl ? { serverUrl } : {}) };
+}
 
 export function handleInvite(): void {
-  if (window.top !== window) return; // хэш — только у верхнего документа
-  const hash = location.hash.slice(1);
-  if (!hash) return;
-
-  const params = new URLSearchParams(hash);
-  const room = (params.get('r') ?? params.get('syncwatch') ?? '').trim();
-  if (!room) return; // в хэше нет нашего приглашения — не вмешиваемся (SPA-роутинг и пр.)
-
-  const rawServer = params.get('s');
-  const serverUrl = rawServer ? safeDecode(rawServer).trim() : undefined;
-
-  void apply(room, serverUrl);
-}
-
-async function apply(room: string, serverUrl?: string): Promise<void> {
-  // Сохраняем best-effort (serverUrl глобален; room — как «последний код» для пред-заполнения
-  // островка). Но подключение адресуется per-tab: комнату шлём прямо в connect.
-  await saveSettings(serverUrl ? { room, serverUrl } : { room });
-  // Убираем хэш, чтобы приглашение не сработало повторно при навигации/перезагрузке.
-  try {
-    history.replaceState(null, '', location.pathname + location.search);
-  } catch { /* некоторые песочницы запрещают replaceState */ }
-  const res = (await browser.runtime
-    .sendMessage({ kind: 'connect', room, serverUrl })
-    .catch(() => null)) as { ok?: boolean; error?: string } | null; // null → SW перезапускается
-  if (res && res.ok === false) {
-    // Типичный случай: старая ссылка без `s=` на устройстве без сохранённого сервера.
-    showToast(`SyncWatch: ${res.error ?? 'не удалось подключиться'} — откройте островок и заполните «Ещё» → «Сервер»`, true);
-  } else {
-    showToast(`SyncWatch: подключаюсь к комнате «${room}»…`);
-  }
-}
-
-function safeDecode(s: string): string {
-  try { return decodeURIComponent(s); } catch { return s; }
-}
-
-/** Короткое всплывающее подтверждение (3с; ошибка — 6с). Оверлей Фазы 5 затем показывает статус. */
-function showToast(text: string, isError = false): void {
-  const host = document.createElement('div');
-  host.style.cssText = 'position:fixed;z-index:2147483647;top:16px;left:50%;transform:translateX(-50%);';
-  const shadow = host.attachShadow({ mode: 'open' });
-  const box = document.createElement('div');
-  box.textContent = text;
-  box.style.cssText =
-    'font-family:system-ui,sans-serif;font-size:13px;color:#fff;' +
-    `background:${isError ? '#d93025' : '#1a73e8'};` +
-    'padding:9px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:80vw;';
-  shadow.appendChild(box);
-  document.documentElement.appendChild(host);
-  setTimeout(() => host.remove(), isError ? 6000 : 3000);
+  if (window.top !== window) return;
+  const invite = parseInvite(location.href, !!document.querySelector('meta[name="syncwatch-invite"]'));
+  if (!invite) return;
+  // A page cannot silently replace the signaling server or enter a room.
+  void loadSettings().then(settings => {
+    const serverUrl = invite.serverUrl || settings.serverUrl;
+    const host = document.createElement('div'); host.dataset.syncwatchUi = '';
+    host.style.cssText = 'position:fixed;z-index:2147483647;top:20px;left:20px';
+    const shadow = host.attachShadow({ mode: 'closed' });
+    const box = document.createElement('section');
+    box.style.cssText = 'font:14px system-ui;background:#162032;color:white;padding:20px;border-radius:12px;max-width:380px;overflow-wrap:anywhere';
+    const text = document.createElement('p');
+    text.textContent = `Войти в комнату ${invite.room} через ${serverUrl || 'неуказанный сервер'}? Участники смогут управлять видео и менять серию в этой вкладке.`;
+    const join = document.createElement('button'); join.textContent = 'Войти в комнату';
+    const dismiss = document.createElement('button'); dismiss.textContent = 'Отмена';
+    const close = () => { removeFloatingLayer(host); host.remove(); };
+    dismiss.onclick = close;
+    join.onclick = async () => {
+      join.disabled = true;
+      try {
+        const result = await browser.runtime.sendMessage({ kind: 'connect', room: invite.room, serverUrl }) as { ok?: boolean; error?: string };
+        if (!result?.ok) throw new Error(result?.error || 'Не удалось подключиться');
+        history.replaceState(null, '', location.pathname + location.search);
+        // Keep controls available even on a join page with no video.
+        await browser.runtime.sendMessage({ kind: 'open-overlay' });
+        close();
+      } catch (e) { text.textContent = String(e); join.disabled = false; }
+    };
+    box.append(text, join, dismiss); shadow.append(box); document.documentElement.append(host); showFloatingLayer(host, 30, shadow);
+  }).catch(() => {});
 }

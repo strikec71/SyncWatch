@@ -1,21 +1,20 @@
-// Юнит-тест чистой функции Firefox-манифеста автообновления (server/src/index.ts):
-// структура addons[id].updates + подстановка версии в update_link на подписанный .xpi.
-
 import { describe, it, expect } from 'vitest';
-import { firefoxUpdatesManifest } from '../src/index';
+import worker from '../src/index';
+import { readFileSync } from 'node:fs';
 
-describe('firefoxUpdatesManifest', () => {
-  it('builds a valid Firefox update manifest for the addon id', () => {
-    const json = JSON.parse(firefoxUpdatesManifest('0.2.0'));
-    const updates = json.addons['syncwatch@local'].updates;
-    expect(updates).toHaveLength(1);
-    expect(updates[0].version).toBe('0.2.0');
+describe('Chrome release channel', () => {
+  it('identifies the deployed server independently of the store version', async () => {
+    const response = await worker.fetch(new Request('https://signal.test/healthz'), { RELEASE_SHA: 'verified-commit' } as any);
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    expect(await response.json()).toEqual({service:'syncwatch-signal',version:pkg.version,revision:'verified-commit'});
+    expect(response.headers.get('cache-control')).toBe('no-store');
   });
-
-  it('points update_link at the tagged, versioned .xpi asset', () => {
-    const json = JSON.parse(firefoxUpdatesManifest('1.4.2'));
-    const link = json.addons['syncwatch@local'].updates[0].update_link;
-    expect(link).toMatch(/\/releases\/download\/v1\.4\.2\/syncwatch-firefox-1\.4\.2\.xpi$/);
-    expect(link.startsWith('https://')).toBe(true);
+  it('reports the existing store version rather than an unpublished build', async () => {
+    const response = await worker.fetch(new Request('https://signal.test/version'), {} as any);
+    expect(await response.json()).toEqual({ version: '0.6.0', notes: '' });
+  });
+  it('no longer serves an alternate browser update manifest', async () => {
+    const response = await worker.fetch(new Request('https://signal.test/updates.json'), {} as any);
+    expect(response.status).toBe(404);
   });
 });

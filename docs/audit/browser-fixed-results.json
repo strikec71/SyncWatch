@@ -1,0 +1,146 @@
+[
+  {
+    "id": "AUD-01 browser buffering pauses",
+    "observed": true,
+    "expected": true,
+    "pass": true
+  },
+  {
+    "id": "AUD-01 browser advertisement pauses",
+    "observed": true,
+    "expected": true,
+    "pass": true
+  },
+  {
+    "id": "AUD-01 browser clearing hold resumes",
+    "observed": true,
+    "expected": true,
+    "pass": true
+  },
+  {
+    "id": "AUD-04 browser snapshot rate",
+    "observed": 1.5,
+    "expected": 1.5,
+    "pass": true
+  },
+  {
+    "id": "AUD-05 browser ad timeline untouched",
+    "observed": {
+      "before": 20.092248,
+      "after": 20.092248,
+      "readyState": 4,
+      "pending": true
+    },
+    "expected": "same position; latest command queued until ad ends",
+    "pass": true
+  },
+  {
+    "id": "PERF irrelevant DOM mutations avoid full scan",
+    "observed": 0,
+    "expected": 0,
+    "pass": true
+  },
+  {
+    "id": "PLAYBACK E2E real video play/seek through Worker",
+    "observed": {
+      "paused": false,
+      "time": 31.282641
+    },
+    "expected": "playing near 30",
+    "pass": true
+  },
+  {
+    "id": "PLAYBACK E2E pause through Worker",
+    "observed": true,
+    "expected": true,
+    "pass": true
+  },
+  {
+    "id": "PLAYBACK E2E late join restores base speed",
+    "observed": 1.5,
+    "expected": 1.5,
+    "pass": true
+  },
+  {
+    "id": "PLAYBACK E2E overlapping buffer holds",
+    "observed": true,
+    "expected": true,
+    "pass": true
+  },
+  {
+    "id": "PLAYBACK E2E holds preserve manual pause",
+    "observed": true,
+    "expected": true,
+    "pass": true
+  },
+  {
+    "id": "PLAYBACK E2E ordered guest safety pause converges",
+    "observed": [
+      {
+        "paused": true,
+        "time": 40,
+        "rate": 1.5
+      },
+      {
+        "paused": true,
+        "time": 40,
+        "rate": 1.5
+      },
+      {
+        "paused": true,
+        "time": 40,
+        "rate": 1.5
+      }
+    ],
+    "expected": "all paused near 40 at 1.5",
+    "pass": true
+  },
+  {
+    "id": "CHAT E2E 200-character text relays once to every participant",
+    "observed": {
+      "sent": {
+        "ok": true
+      },
+      "counts": [
+        1,
+        1,
+        1
+      ]
+    },
+    "expected": "one local copy, one remote copy per participant",
+    "pass": true
+  },
+  {
+    "id": "CHAT E2E wheel auto-pause preserves room timeline and rate",
+    "observed": {
+      "quick": {
+        "ok": true
+      },
+      "paused": [
+        {
+          "paused": true,
+          "time": 50.12766,
+          "rate": 1.5
+        },
+        {
+          "paused": true,
+          "time": 50.148311,
+          "rate": 1.5
+        },
+        {
+          "paused": true,
+          "time": 50.068142,
+          "rate": 1.5
+        }
+      ]
+    },
+    "expected": "all paused near 50 at 1.5",
+    "pass": true
+  },
+  {
+    "id": "Extension E2E",
+    "observed": "NOT RUN: environment administrator disables unpacked extension loading",
+    "expected": "run on a permitted Chrome test environment",
+    "pass": null
+  }
+]

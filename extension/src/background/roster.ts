@@ -124,7 +124,16 @@ export function clearBlocks(s: Session): void {
 
 // ── Пуш баннера ──────────────────────────────────────────────────────────────
 
+export function syncHolds(s: Session): void {
+  const blocks = [...s.roster.values()].filter(p => p.id !== s.myConnId && !p.detached).map(p => s.blocks.get(p.id));
+  for (const msg of [
+    { kind: 'buffer-control', buffering: !s.detached && blocks.some(b => b?.buffer) },
+    { kind: 'ad-control', ad: !s.detached && blocks.some(b => b?.ad) },
+  ]) browser.tabs.sendMessage(s.tabId, msg, { frameId: s.frameId }).catch(() => {});
+}
+
 export function recomputeBanner(s: Session): void {
+  syncHolds(s);
   const { state, since, name } = aggregateBanner(s.blocks, s.roster, s.myConnId);
   const key = `${state}|${name}|${since}`;
   if (key === s.lastBannerKey) return;
@@ -151,9 +160,13 @@ export function applyRoster(s: Session, msg: RosterMessage): void {
 
   const nextMap = new Map<number, RosterPeer>(msg.peers.map((p) => [p.id, p]));
   for (const id of [...s.blocks.keys()]) {
-    if (!nextMap.has(id)) s.blocks.delete(id);
+    if (!nextMap.has(id) || nextMap.get(id)?.detached) s.blocks.delete(id);
   }
   s.roster = nextMap;
+  for (const p of msg.peers) {
+    if (p.buffering !== undefined) blockOf(s, p.id).buffer = p.buffering;
+    if (p.ad !== undefined) { const b = blockOf(s, p.id); if (p.ad && !b.ad) b.adSince = Date.now(); b.ad = p.ad; }
+  }
 
   recomputeBanner(s);
   notifyPopup(s);
@@ -165,7 +178,8 @@ export function statusSnapshot(s: Session): StatusSnapshot {
   const peers = [...s.roster.values()];
   const others = livePeers(s);
   return {
-    connected: s.connected,
+    connected: s.connected && s.phase === 'joined',
+    updateVersion: s.updateVersion, serverUrl: s.serverUrl, phase: s.phase, error: s.error, contentMismatch: s.contentMismatch,
     peerPresent: others.length > 0,
     room: s.room,
     deviceName: s.deviceName,
@@ -189,7 +203,7 @@ export function notifyPopup(s: Session): void {
 /** Доставить сообщение в островок СВОЕЙ вкладки (верхний фрейм). tabId сессии известен
  *  с момента connect, поэтому всегда адресно (без бродкаста). */
 export function sendToOverlays(s: Session, msg: RuntimeMessage): void {
-  browser.tabs.sendMessage(s.tabId, msg, { frameId: 0 }).catch(() => { /* нет оверлея */ });
+  browser.tabs.sendMessage(s.tabId, msg).catch(() => { /* нет оверлея */ });
 }
 
 /** Событие активности в ленту островка. */

@@ -1,0 +1,111 @@
+[
+  {
+    "id": "banner visible before fullscreen",
+    "observed": {
+      "open": true,
+      "above": true,
+      "fullscreen": false
+    },
+    "pass": true
+  },
+  {
+    "id": "container: existing banner remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true
+    },
+    "pass": false
+  },
+  {
+    "id": "container: control panel remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true
+    },
+    "pass": false
+  },
+  {
+    "id": "container: incoming toast visible",
+    "observed": {
+      "text": "Message received in fullscreen",
+      "above": false
+    },
+    "pass": false
+  },
+  {
+    "id": "video: existing banner remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true
+    },
+    "pass": false
+  },
+  {
+    "id": "video: control panel remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true
+    },
+    "pass": false
+  },
+  {
+    "id": "video: incoming toast visible",
+    "observed": {
+      "text": "Message received in fullscreen",
+      "above": false
+    },
+    "pass": false
+  },
+  {
+    "id": "iframe: existing banner remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true
+    },
+    "pass": false
+  },
+  {
+    "id": "iframe: control panel remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true
+    },
+    "pass": false
+  },
+  {
+    "id": "iframe: incoming toast visible",
+    "observed": {
+      "text": "Message received in fullscreen",
+      "above": false
+    },
+    "pass": false
+  },
+  {
+    "id": "site popover does not cover existing banner",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true
+    },
+    "pass": false
+  },
+  {
+    "id": "restacking preserves focused input and text",
+    "observed": {
+      "focused": false,
+      "value": "typing-in-fullscreen"
+    },
+    "pass": false
+  },
+  {
+    "id": "UI cleanup removes all floating hosts",
+    "observed": 0,
+    "pass": true
+  }
+]

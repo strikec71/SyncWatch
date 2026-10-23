@@ -15,6 +15,7 @@ export interface PlayerEventMsg {
 /** background → content-скрипт: применить удалённую команду. */
 export interface ApplyMsg {
   kind: 'apply';
+  pauseOnly?: boolean;
   action: PlayerAction;
   currentTime: number;
   rate?: number;
@@ -109,8 +110,11 @@ export interface BannerMsg {
 
 /** островок/инвайт → background: подключить ЭТУ вкладку к комнате (room — per-tab,
  *  едет в сообщении; serverUrl опционален, иначе берётся глобальная настройка). */
+export interface SaveSettingsMsg { kind: 'save-settings'; patch: import('./settings').SettingsPatch; }
 export interface ConnectMsg { kind: 'connect'; room: string; serverUrl?: string; }
 export interface DisconnectMsg { kind: 'disconnect'; }
+export interface ToggleOverlayMsg { kind: 'toggle-overlay' | 'show-overlay'; }
+export interface OpenOverlayMsg { kind: 'open-overlay'; }
 export interface GetStatusMsg { kind: 'get-status'; }
 
 /** overlay/тест → background: переключить соло/синхрон (detach). Фаза A. */
@@ -147,6 +151,11 @@ export interface QueryVideoMsg { kind: 'query-video'; }
 export interface StatusMsg {
   kind: 'status';
   connected: boolean;
+  serverUrl?: string;
+  updateVersion?: string;
+  phase?: string;
+  error?: string;
+  contentMismatch?: boolean;
   peerPresent: boolean;
   room: string;
   deviceName: string;
@@ -173,12 +182,14 @@ export interface ChatEntry {
 
 /** островок → background: отправить быстрое сообщение по коду каталога (Фаза 0.7.0). */
 export interface SendQuickMsg { kind: 'send-quick-message'; code: string; }
+export interface SendTextMsg { kind: 'send-text-message'; text: string; }
 
 /** background → островок (frame 0): новая строка чата (входящая или своя эхом). */
 export interface ChatPushMsg { kind: 'chat'; entry: ChatEntry; }
 
 /** островок → background: отдать текущий лог чата сессии (ответ `{ entries }`). */
 export interface GetChatLogMsg { kind: 'get-chat-log'; }
+export interface SetChatDraftMsg { kind: 'set-chat-draft'; text: string; }
 
 /** background → content активного фрейма: поставить ЛОКАЛЬНУЮ паузу (автопауза быстрого
  *  сообщения). Это НЕ applyRemote — штатный `pause`→player-event→STATE уходит комнате. */
@@ -187,8 +198,7 @@ export interface PauseLocalMsg { kind: 'pause-local'; }
 /** ── Друзья + живой presence (Фаза «друзья») ────────────────────────────────
  *  Друзья — ГЛОБАЛЬНЫЕ данные, не привязаны к вкладке: островок шлёт запросы без
  *  room-контекста, а background рассылает `friends-status` через
- *  `browser.runtime.sendMessage` (в отличие от `status`, который строго frameId:0
- *  своей вкладки). presence-обмен с сервером идёт HTTP-JSON, не через WS-релей. */
+ *  `browser.tabs.sendMessage` всем фреймам вкладок. `status` относится к одной вкладке. presence-обмен с сервером идёт HTTP-JSON, не через WS-релей. */
 
 /** Готовая строка друга для островка: статус уже строкой (не сырой PresenceView),
  *  `room` — код текущей комнаты друга (для кнопки «Войти»), '' если не в комнате. */
@@ -235,9 +245,11 @@ export interface FriendRequestIncomingMsg {
   id: string;
   name: string;
   serverUrl?: string;
+  inviteToken?: string;
 }
 
 export type RuntimeMessage =
+  | SaveSettingsMsg
   | PlayerEventMsg
   | ApplyMsg
   | VideoReadyMsg
@@ -258,6 +270,8 @@ export type RuntimeMessage =
   | ConnectMsg
   | DisconnectMsg
   | GetStatusMsg
+  | ToggleOverlayMsg
+  | OpenOverlayMsg
   | SetModeMsg
   | SetControlMsg
   | RequestControlMsg
@@ -266,8 +280,10 @@ export type RuntimeMessage =
   | VideoAvailabilityMsg
   | QueryVideoMsg
   | StatusMsg
+  | SendTextMsg
   | SendQuickMsg
   | ChatPushMsg
+  | SetChatDraftMsg
   | GetChatLogMsg
   | PauseLocalMsg
   | GetFriendsMsg
@@ -282,6 +298,11 @@ export type RuntimeMessage =
 /** Снимок состояния хаба для оверлея/теста. Roster-based (Фаза A + `self` Фаза B). */
 export interface StatusSnapshot {
   connected: boolean;
+  serverUrl?: string;
+  updateVersion?: string;
+  phase?: string;
+  error?: string;
+  contentMismatch?: boolean;
   peerPresent: boolean;
   room: string;
   deviceName: string;

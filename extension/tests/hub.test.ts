@@ -48,7 +48,7 @@ describe('hub constants', () => {
     expect(BACKOFF_BASE).toBe(1000);
     expect(BACKOFF_CAP).toBe(30000);
     expect(BACKOFF_JITTER).toBe(1000);
-    expect(WATCHDOG_SILENCE_MS).toBe(45000);
+    expect(WATCHDOG_SILENCE_MS).toBeGreaterThan(2 * 60_000);
     expect(IDLE_DISCONNECT_MS).toBe(6 * 60 * 60 * 1000);
   });
 });
@@ -369,13 +369,13 @@ describe('onVideoReady', () => {
     forgetTab(TAB);
   });
 
-  it('host: не шлёт resync (host — источник снапшота)', () => {
+  it('host: после готовности просит обновить снимки существующим участникам', () => {
     forgetTab(TAB);
     onVideoPresence(TAB, 7, true);
     const { s, sent } = connectedSession();
     s.myConnId = 1; // теперь мы host (rp(1,isHost))
     onVideoReady(s, 7);
-    expect(sent).toEqual([]);
+    expect(sent.map(d => JSON.parse(d))).toEqual([{ type: 'MODE', detached: false }]);
     forgetTab(TAB);
   });
 

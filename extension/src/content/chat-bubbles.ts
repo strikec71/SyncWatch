@@ -1,4 +1,4 @@
-// Плавающие чат-баблы (Фаза 0.7.0) — только верхний фрейм, независимо от островка
+// Плавающие чат-баблы (Фаза 0.7.0) — документ показа, выбранный ContentUI, независимо от островка
 // (политика как у баннера: видны даже при overlayEnabled:false и в фуллскрине).
 // Отдельный top-layer виджет (баннер однослотовый — сюда не годится): стек последних
 // сообщений чуть НИЖЕ баннера. Своё сообщение баблом НЕ показываем (только в логе островка).
@@ -6,6 +6,7 @@
 // ⚠️ XSS: имя и текст — недоверенные, рендерятся ТОЛЬКО через textContent.
 // ⚠️ inset-ловушка: в cssText `inset:auto` идёт ДО top/left (иначе шорткат уносит в угол).
 
+import { showFloatingLayer, hideFloatingLayer, removeFloatingLayer } from './floating-layer';
 import type { ChatEntry } from '../shared/messages';
 import { quickMessageByCode } from '../shared/quick-messages';
 
@@ -26,6 +27,7 @@ function renderContent(entry: ChatEntry): string {
 export class ChatBubbles {
   private host: HTMLDivElement | null = null;
   private stack: HTMLElement | null = null;
+  private timers = new Map<HTMLElement, number>();
 
   /** Показать бабл для входящего сообщения. Своё (self) пропускаем — оно только в логе. */
   push(entry: ChatEntry): void {
@@ -40,8 +42,14 @@ export class ChatBubbles {
     bubble.className = 'bubble';
     bubble.textContent = `💬 ${entry.name}: ${content}`; // ← textContent ONLY (XSS-гейт)
     this.stack.appendChild(bubble);
-    while (this.stack.childElementCount > MAX_BUBBLES) this.stack.firstElementChild?.remove();
-    window.setTimeout(() => bubble.remove(), BUBBLE_TTL_MS);
+    while (this.stack.childElementCount > MAX_BUBBLES) {
+      const oldest = this.stack.firstElementChild as HTMLElement;
+      clearTimeout(this.timers.get(oldest)); this.timers.delete(oldest); oldest.remove();
+    }
+    this.timers.set(bubble, window.setTimeout(() => {
+      this.timers.delete(bubble); bubble.remove();
+      if (!this.stack?.childElementCount && this.host) hideFloatingLayer(this.host);
+    }, BUBBLE_TTL_MS));
 
     this.showInTopLayer();
   }
@@ -56,7 +64,7 @@ export class ChatBubbles {
       'position:fixed;inset:auto;margin:0;border:0;padding:0;background:transparent;' +
       'left:50%;top:calc(14% + 52px);transform:translateX(-50%);z-index:2147483645;' +
       'max-width:none;max-height:none;overflow:visible;pointer-events:none;';
-    const shadow = host.attachShadow({ mode: 'open' });
+    const shadow = host.attachShadow({ mode: 'closed' });
     shadow.innerHTML = BUBBLES_TEMPLATE;
     document.documentElement.appendChild(host);
     this.host = host;
@@ -65,12 +73,13 @@ export class ChatBubbles {
   }
 
   private showInTopLayer(): void {
-    const host = this.host as (HTMLElement & { showPopover?: () => void }) | null;
-    if (!host || typeof host.showPopover !== 'function') return;
-    try { host.showPopover(); } catch { /* уже показан */ }
+    if (this.host) showFloatingLayer(this.host, 20);
   }
 
   destroy(): void {
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    if (this.host) removeFloatingLayer(this.host);
     this.host?.remove();
     this.host = null;
     this.stack = null;

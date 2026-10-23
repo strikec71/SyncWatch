@@ -1,0 +1,86 @@
+name: Release SyncWatch
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+  prepare:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - run: npm ci
+        working-directory: extension
+      - run: npm run package
+        working-directory: extension
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SW_VERSION=$(node -p "require('./extension/package.json').version")
+          SW_TAG="v${SW_VERSION}"
+          test "$(git rev-parse "${SW_TAG}^{commit}")" = "$GITHUB_SHA"
+          if gh release view "$SW_TAG" --json isDraft --jq .isDraft > /tmp/syncwatch-release-state; then
+            test "$(cat /tmp/syncwatch-release-state)" = true
+          else
+            gh release create "$SW_TAG" --verify-tag --draft --title "SyncWatch ${SW_VERSION}" --notes-file "docs/releases/${SW_VERSION}.md"
+          fi
+          gh release upload "$SW_TAG" "extension/dist/packages/syncwatch-chrome-${SW_VERSION}.zip" extension/dist/packages/SHA256SUMS --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chrome-web-store-upload
+          path: |
+            extension/dist/packages/*.zip
+            extension/dist/packages/SHA256SUMS
+  deploy-server:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: syncwatch-production-server
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Check Cloudflare configuration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Add CLOUDFLARE_API_TOKEN in repository Actions secrets'; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo 'Add CLOUDFLARE_ACCOUNT_ID in repository Actions secrets'; exit 1; }
+      - run: npm ci
+        working-directory: server
+      - name: Deploy the verified server
+        working-directory: server
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SW_SERVER_URL: ${{ vars.SYNCWATCH_SERVER_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run deploy -- --var "RELEASE_SHA:${GITHUB_SHA}" 2>&1 | tee /tmp/syncwatch-deploy.log
+          node scripts/check-deployment.mjs "${SW_SERVER_URL:-/tmp/syncwatch-deploy.log}" "$GITHUB_SHA"

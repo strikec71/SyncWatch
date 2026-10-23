@@ -1,6 +1,7 @@
 node_modules/
 extension/dist/
 extension/dist.zip
+/release/
 .wrangler/
 *.log
 .DS_Store

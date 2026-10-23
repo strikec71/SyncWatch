@@ -23,8 +23,9 @@ import {
   EXPECTED_NAV_TTL_MS,
 } from './state';
 import { requestGateResync, sendToActiveFrame } from './sync';
-import { resetTabFrames } from './presence';
-import { notifyEvent } from './roster';
+import { persistSessions } from './persistence';
+import { queryVideoAvailable, resetTabFrames } from './presence';
+import { notifyEvent, notifyPopup } from './roster';
 
 // Окно разбора перекрёстных навигаций: если МЫ сами отправили NAV не дольше этого назад,
 // а тут прилетает встречный — это гонка, решаем по host-приоритету (не по времени).
@@ -44,6 +45,8 @@ export function normalizeSyncUrl(raw: string): string | null {
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
   u.hash = '';
+  if (u.username || u.password) return null;
+  for (const key of [...u.searchParams.keys()]) if (/^(token|access_token|auth|authorization|password|session|sid|key|signature|api_key|utm_.+|fbclid|gclid)$/i.test(key)) u.searchParams.delete(key);
   u.hostname = u.hostname.toLowerCase();
   return u.href;
 }
@@ -124,7 +127,26 @@ function liveExpected(s: Session, now: number): string | null {
 export function onNavReport(s: Session, rawUrl: string): void {
   const url = normalizeSyncUrl(rawUrl);
   if (url === null) return; // не-http(s) страница — синхронизировать нечего
+  if (s.navigationOrigin && new URL(url).origin !== s.navigationOrigin) {
+    if (!s.detached) {
+      s.detached = true; sendWire(s, { type: 'MODE', detached: true });
+      notifyEvent(s, 'Вы покинули сайт просмотра — включен режим соло'); notifyPopup(s);
+      void persistSessions().catch(() => {});
+    }
+    return;
+  }
   const now = Date.now();
+  if (s.connected && s.navigationOrigin && url !== s.pageUrl && !queryVideoAvailable(s.tabId)) {
+    if (s.pendingPageUrl !== url) { s.pendingPageUrl = url; s.pendingPageAt = now; }
+    if (now - s.pendingPageAt >= 10000) {
+      s.detached = true; s.pendingPageUrl = '';
+      sendWire(s, { type: 'MODE', detached: true });
+      notifyEvent(s, 'На новой странице нет видео — включен режим соло'); notifyPopup(s);
+      void persistSessions().catch(() => {});
+    }
+    return;
+  }
+  s.pendingPageUrl = '';
   const decision = onNavReportDecision({
     reported: url,
     baseline: s.pageUrl,
@@ -176,6 +198,11 @@ export function onNavReport(s: Session, rawUrl: string): void {
 
 /** Фрейм плеера отрепортил текущий выбор серии/сезона/озвучки → решаем и транслируем. */
 export function onMediaSig(s: Session, sig: string): void {
+  if (s.contentMismatch) {
+    if (s.mismatchSig !== sig) return;
+    s.contentMismatch = false; s.mismatchSig = null;
+    sendWire(s, { type: 'MODE', detached: false }); notifyPopup(s);
+  }
   const now = Date.now();
   const expected = s.expectedSig && now - s.expectedSigAt < EXPECTED_NAV_TTL_MS ? s.expectedSig : null;
   const decision = onNavReportDecision({
@@ -189,9 +216,11 @@ export function onMediaSig(s: Session, sig: string): void {
   switch (decision) {
     case 'set-baseline':
       s.mediaSig = sig;
+      void persistSessions().catch(() => {});
       return;
     case 'confirm-expected':
       s.mediaSig = sig;
+      void persistSessions().catch(() => {});
       s.expectedSig = null;
       noteActivity(s);
       return;
@@ -204,6 +233,7 @@ export function onMediaSig(s: Session, sig: string): void {
       return;
     case 'broadcast':
       s.mediaSig = sig;
+      void persistSessions().catch(() => {});
       s.lastSigSentAt = now;
       noteActivity(s);
       sendWire(s, { type: 'NAV', scope: 'player', sig, ts: now });
@@ -225,7 +255,7 @@ function applyRemoteMediaNav(s: Session, msg: NavMessage): void {
     detached: s.detached,
     amHost: amHost(s),
     fromHost: msg.from != null && s.roster.get(msg.from)?.isHost === true,
-    sentOwnNavAt: s.lastSigSentAt,
+    sentOwnNavAt: msg.revision === undefined ? s.lastSigSentAt : 0,
     now: Date.now(),
     conflictWindowMs: NAV_CONFLICT_WINDOW_MS,
     // Fix 3 не применяется к player-scope (нет reload вкладки) — покинутый url не ведём.
@@ -253,11 +283,7 @@ export function onApplyFailedDecision(p: {
   return p.expected != null && p.now - p.expectedAt < p.ttl ? 'adopt' : 'ignore';
 }
 
-/** Content-скрипт не смог применить выбор партнёра (у нас нет такой озвучки/серии) — наборы
- *  озвучек в балансерах реально различаются. Молчаливое расхождение допустимо by design:
- *  НЕ откатываем комнату, НЕ шлём NAV. Но снимаем луп-гард (STATE/BEAT перестают дропаться —
- *  чинит «висящий expectedSig») и чиним baseline на ПРАВДУ (наш реальный выбор), чтобы хост
- *  потом не пушнул новичку несуществующий у себя sig. */
+/** Failed content selection suspends time synchronization until matching content is selected. */
 export function onMediaApplyFailed(s: Session, actualSig: string | null): void {
   const decision = onApplyFailedDecision({
     expected: s.expectedSig,
@@ -266,8 +292,10 @@ export function onMediaApplyFailed(s: Session, actualSig: string | null): void {
     ttl: EXPECTED_NAV_TTL_MS,
   });
   if (decision === 'ignore') return;
-  s.expectedSig = null;                 // луп-гард снят: STATE/BEAT снова применяются немедленно
-  if (actualSig) s.mediaSig = actualSig; // baseline = наш реальный выбор (не чужой, которого нет)
+  s.contentMismatch = true; s.mismatchSig = s.expectedSig;
+  notifyPopup(s);
+  s.expectedSig = null; // contentMismatch blocks time synchronization until corrected
+  s.mediaSig = actualSig || ''; // Preserve only the actual local selection.
   notifyEvent(s, 'Не удалось переключить серию/озвучку за партнёром — такой опции нет в вашем плеере, остаёмся на текущей');
 }
 
@@ -281,6 +309,9 @@ export async function applyRemoteNav(s: Session, msg: NavMessage): Promise<void>
   if (msg.url === undefined) return;
   const url = normalizeSyncUrl(msg.url);
   if (url === null) return; // ревалидация схемы на применении (defense-in-depth)
+  if (s.navigationOrigin && new URL(url).origin !== s.navigationOrigin) {
+    notifyEvent(s, 'Комната предлагает другой сайт — откройте приглашение явно'); return;
+  }
   noteActivity(s);
 
   const now = Date.now();
@@ -290,7 +321,7 @@ export async function applyRemoteNav(s: Session, msg: NavMessage): Promise<void>
     detached: s.detached,
     amHost: amHost(s),
     fromHost: msg.from != null && s.roster.get(msg.from)?.isHost === true,
-    sentOwnNavAt: s.lastNavSentAt,
+    sentOwnNavAt: msg.revision === undefined ? s.lastNavSentAt : 0,
     now,
     conflictWindowMs: NAV_CONFLICT_WINDOW_MS,
     directed: msg.to != null,
@@ -304,9 +335,11 @@ export async function applyRemoteNav(s: Session, msg: NavMessage): Promise<void>
   // baseline — БЕЗ tabs.update/reload, не сбрасывая frameId/lastSync/presence/островок.
   try {
     const tab = await browser.tabs.get(s.tabId);
-    if (normalizeSyncUrl(tab.url ?? '') === url) { s.pageUrl = url; return; }
+    if (msg.revision !== undefined && msg.revision < s.revision) return;
+    if (normalizeSyncUrl(tab.url ?? '') === url) { s.pageUrl = url; s.navigationOrigin ||= new URL(url).origin; return; }
   } catch { /* вкладка ушла — обычная навигация ниже (upd тоже отвалится безопасно) */ }
 
+  s.navigationOrigin ||= new URL(url).origin;
   s.expectedNav = url;
   s.expectedNavAt = Date.now();
   s.pageUrl = url;

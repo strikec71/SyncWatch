@@ -425,19 +425,19 @@ describe('onMediaApplyFailed (side effects)', () => {
     s.expectedSig = 'kodik|s=1|e=5|t=10';
     s.expectedSigAt = Date.now();
     onMediaApplyFailed(s, 'kodik|s=1|e=5|t=197'); // наш реальный выбор (Студийная Банда)
-    expect(s.expectedSig).toBeNull();                  // STATE/BEAT снова применяются
+    expect(s.expectedSig).toBeNull();                  // expected снят; contentMismatch отдельно блокирует STATE/BEAT
     expect(s.mediaSig).toBe('kodik|s=1|e=5|t=197');    // baseline = правда
     expect(sent.find((m) => (m as { type: string }).type === 'NAV')).toBeUndefined(); // комнату не откатываем
   });
 
-  it('actualSig=null (плеер не готов): луп-гард снят, baseline не трогаем', () => {
+  it('actualSig=null: содержимое неизвестно, синхрон времени приостановлен', () => {
     const { s } = connectedSession(37, [rp(1, { isHost: true }), rp(2)], 2);
     s.mediaSig = 'kodik|t=10';
     s.expectedSig = 'kodik|t=10';
     s.expectedSigAt = Date.now();
     onMediaApplyFailed(s, null);
     expect(s.expectedSig).toBeNull();
-    expect(s.mediaSig).toBe('kodik|t=10'); // без actualSig baseline остаётся как есть
+    expect(s.mediaSig).toBe(''); // без actualSig baseline неизвестен
   });
 
   it('expectedSig уже снят (null): сигнал игнорируется целиком', () => {

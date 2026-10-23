@@ -17,11 +17,15 @@ const lastPushed = new Map<number, boolean>();
 // tabId → таймер дебаунса «видео пропало» (гасит мигание при подмене <video>).
 const absenceTimers = new Map<number, number>();
 
+const PRESENCE_ALARM = 'syncwatch-presence';
+let alarmStarted = false;
+const seen = new Map<string, number>();
 const ABSENCE_DEBOUNCE_MS = 2000; // столько ждём перед тем, как признать «видео пропало»
 
 /** Есть ли в этой вкладке хоть один фрейм с видео. */
 export function queryVideoAvailable(tabId: number): boolean {
   const frames = tabs.get(tabId);
+  if (frames) for (const id of frames.keys()) if (Date.now() - (seen.get(`${tabId}:${id}`) ?? 0) > 90000) frames.delete(id);
   if (!frames) return false;
   for (const present of frames.values()) if (present) return true;
   return false;
@@ -30,6 +34,7 @@ export function queryVideoAvailable(tabId: number): boolean {
 /** frameId всех фреймов вкладки, где сейчас есть <video> (для выбора фрейма снапшота). */
 export function framesWithVideo(tabId: number): number[] {
   const frames = tabs.get(tabId);
+  if (frames) for (const id of frames.keys()) if (Date.now() - (seen.get(`${tabId}:${id}`) ?? 0) > 90000) frames.delete(id);
   if (!frames) return [];
   const out: number[] = [];
   for (const [frameId, present] of frames) if (present) out.push(frameId);
@@ -39,8 +44,10 @@ export function framesWithVideo(tabId: number): number[] {
 /** Фрейм сообщил своё присутствие видео. Обновляем карту и, при смене доступности
  *  по вкладке, пушим в островок (frame 0). Появление — сразу, пропадание — с дебаунсом. */
 export function onVideoPresence(tabId: number, frameId: number, present: boolean): void {
+  if (present && !alarmStarted) { alarmStarted = true; browser.alarms.create(PRESENCE_ALARM, { periodInMinutes: 0.5 }); }
   let frames = tabs.get(tabId);
   if (!frames) { frames = new Map(); tabs.set(tabId, frames); }
+  seen.set(`${tabId}:${frameId}`, Date.now());
   frames.set(frameId, present);
 
   const available = queryVideoAvailable(tabId);
@@ -77,6 +84,7 @@ function pushAvailability(tabId: number, available: boolean): void {
  *  заново. `lastPushed` НЕ трогаем — пуш доступности пойдёт на реальную смену. */
 export function resetTabFrames(tabId: number): void {
   tabs.delete(tabId);
+  for (const key of seen.keys()) if (key.startsWith(`${tabId}:`)) seen.delete(key);
   const t = absenceTimers.get(tabId);
   if (t != null) { clearTimeout(t); absenceTimers.delete(tabId); }
 }
@@ -84,7 +92,15 @@ export function resetTabFrames(tabId: number): void {
 /** Вкладка закрыта — вычищаем всё её состояние. */
 export function forgetTab(tabId: number): void {
   tabs.delete(tabId);
+  for (const key of seen.keys()) if (key.startsWith(`${tabId}:`)) seen.delete(key);
   lastPushed.delete(tabId);
   const t = absenceTimers.get(tabId);
   if (t != null) { clearTimeout(t); absenceTimers.delete(tabId); }
 }
+
+// An unloaded iframe may not deliver pagehide; expire its lease independently.
+browser.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name !== PRESENCE_ALARM) return;
+  for (const tabId of [...tabs.keys()]) if (!queryVideoAvailable(tabId)) { pushAvailability(tabId, false); forgetTab(tabId); }
+  if (!tabs.size) { alarmStarted = false; void browser.alarms.clear(PRESENCE_ALARM); }
+});

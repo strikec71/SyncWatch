@@ -14,13 +14,16 @@ export function __clearTabs(): void { tabUrls.clear(); }
 const stub = {
   tabs: {
     sendMessage: () => resolved(),
+    onRemoved: { addListener: () => {} },
+    onUpdated: { addListener: () => {} },
     query: () => Promise.resolve([] as unknown[]),
     update: () => resolved(),
     get: (tabId: number) => Promise.resolve({ id: tabId, url: tabUrls.get(tabId) }),
   },
   runtime: {
     sendMessage: () => resolved(),
-    onMessage: { addListener: () => {} },
+    onMessage: { addListener: () => {}, removeListener: () => {} },
+    onInstalled: { addListener: () => {} }, onStartup: { addListener: () => {} },
   },
   alarms: {
     create: () => {},
@@ -29,8 +32,9 @@ const stub = {
   },
   storage: {
     local: { get: () => Promise.resolve({}), set: () => resolved() },
+    session: { get: () => Promise.resolve({}), set: () => resolved() },
     sync: { get: () => Promise.resolve({}), set: () => resolved() },
-    onChanged: { addListener: () => {} },
+    onChanged: { addListener: () => {}, removeListener: () => {} },
   },
   action: { onClicked: { addListener: () => {} } },
 };

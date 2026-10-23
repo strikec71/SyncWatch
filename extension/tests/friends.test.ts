@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import browser from '../src/shared/browser';
+import { publicKeyId } from '../src/shared/identity';
 import {
   httpsHostFromServer,
   viewToStatus,
@@ -18,6 +19,10 @@ import {
   buildFriendLink,
   buildJoinUrl,
   beatPresence,
+  tickPresence,
+  handleAddFriendLink,
+  pollPresence,
+  pushFriendsStatus,
   handleAcceptFriend,
   handleDeclineFriend,
   handleRemoveFriend,
@@ -29,6 +34,7 @@ import {
   parsePresenceFriend,
 } from '../src/shared/presence';
 import type { InboxMsg, PresenceView } from '../src/shared/presence';
+import { ensureIdentity, loadSettings, updateSettings } from '../src/shared/settings';
 import type { Friend } from '../src/shared/settings';
 import type { FriendRequestIncomingMsg } from '../src/shared/messages';
 
@@ -64,7 +70,7 @@ function view(over: Partial<PresenceView> = {}): PresenceView {
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+  fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ok:true}) });
   vi.stubGlobal('fetch', fetchMock);
 });
 afterEach(() => {
@@ -208,7 +214,9 @@ describe('beatPresence', () => {
     expect(url).toBe('https://sig.example.dev/presence/beat');
     expect(init.method).toBe('POST');
     const body = JSON.parse(String(init.body));
-    expect(body.clientId).toBe('me-1');
+    expect(body.clientId).toBe((await ensureIdentity()).clientId);
+    expect((init.headers as Record<string,string>).authorization).toMatch(/^Signature [a-f0-9]{128}$/);
+    expect(JSON.stringify(init.headers)).not.toContain((await ensureIdentity()).privateKey.d);
     expect(body.room).toBe('');
     expect(body.allow).toEqual([await sha256Hex('aaa'), await sha256Hex('bbb')]);
     expect(body.allow.every((h: string) => /^[0-9a-f]{64}$/.test(h))).toBe(true);
@@ -251,10 +259,10 @@ describe('beatPresence', () => {
 describe('handleAcceptFriend', () => {
   it('инбокс-запись → друг + очистка записи инбокса', async () => {
     const store = mockStorage({
-      settings: { serverUrl: '', sharePresence: true },
+      settings: { serverUrl: 'wss://sig.example.dev', sharePresence: true },
       identity: { clientId: 'me' },
       friends: [],
-      friendInbox: [{ id: 'anya', name: 'Аня', serverUrl: '', ts: 0 }],
+      friendInbox: [{ id: 'anya', name: 'Аня', serverUrl: 'wss://sig.example.dev', inviteToken: '2'.repeat(64), ts: 0 }],
     });
 
     await handleAcceptFriend('anya');
@@ -265,10 +273,10 @@ describe('handleAcceptFriend', () => {
 
   it('уже друг → не дублируется, запись инбокса всё равно снимается', async () => {
     const store = mockStorage({
-      settings: { serverUrl: '', sharePresence: true },
+      settings: { serverUrl: 'wss://sig.example.dev', sharePresence: true },
       identity: { clientId: 'me' },
       friends: [friend('anya')],
-      friendInbox: [{ id: 'anya', name: 'Аня', serverUrl: '', ts: 0 }],
+      friendInbox: [{ id: 'anya', name: 'Аня', serverUrl: 'wss://sig.example.dev', inviteToken: '2'.repeat(64), ts: 0 }],
     });
 
     await handleAcceptFriend('anya');
@@ -279,7 +287,7 @@ describe('handleAcceptFriend', () => {
 
   it('нет такой записи в инбоксе → ничего не делает', async () => {
     const store = mockStorage({
-      settings: { serverUrl: '', sharePresence: true },
+      settings: { serverUrl: 'wss://sig.example.dev', sharePresence: true },
       identity: { clientId: 'me' },
       friends: [],
       friendInbox: [],
@@ -331,8 +339,9 @@ describe('handleRemoveFriend', () => {
 describe('handleFriendRequestIncoming', () => {
   const msg = (over: Partial<FriendRequestIncomingMsg> = {}): FriendRequestIncomingMsg => ({
     kind: 'friend-request-incoming',
-    id: 'anya',
+    id: 'a'.repeat(64),
     name: 'Аня',
+    inviteToken: '2'.repeat(64),
     serverUrl: 'wss://sig.example.dev',
     ...over,
   });
@@ -342,11 +351,11 @@ describe('handleFriendRequestIncoming', () => {
     await handleFriendRequestIncoming(msg());
     const inbox = store.get('friendInbox') as { id: string; name: string; serverUrl: string }[];
     expect(inbox).toHaveLength(1);
-    expect(inbox[0]).toMatchObject({ id: 'anya', name: 'Аня', serverUrl: 'wss://sig.example.dev' });
+    expect(inbox[0]).toMatchObject({ id: 'a'.repeat(64), name: 'Аня', serverUrl: 'wss://sig.example.dev' });
   });
 
   it('уже друг → повторная ссылка игнорируется (инбокс не растёт)', async () => {
-    const store = mockStorage({ friends: [friend('anya')], friendInbox: [] });
+    const store = mockStorage({ friends: [friend('a'.repeat(64))], friendInbox: [] });
     await handleFriendRequestIncoming(msg());
     expect(store.get('friendInbox')).toEqual([]);
   });
@@ -354,7 +363,7 @@ describe('handleFriendRequestIncoming', () => {
   it('дубликат запроса → освежает имя/сервер, не плодит записи', async () => {
     const store = mockStorage({
       friends: [],
-      friendInbox: [{ id: 'anya', name: 'старое', serverUrl: '', ts: 111 }],
+      friendInbox: [{ id: 'a'.repeat(64), name: 'старое', serverUrl: '', ts: 111 }],
     });
 
     await handleFriendRequestIncoming(msg({ name: 'Аня-новое', serverUrl: 'wss://new.dev' }));
@@ -436,5 +445,71 @@ describe('parsePresenceFriend', () => {
     ['from длиннее 64', { from: 'x'.repeat(65), fromName: 'x', to: 'b' }],
   ])('отбраковывает: %s', (_label, input) => {
     expect(parsePresenceFriend(input)).toBeNull();
+  });
+});
+
+describe('friends regressions from the current source audit', () => {
+  it('creates one identity during concurrent first use and binds its public ID to the private key', async () => {
+    mockStorage();
+    const identities = await Promise.all(Array.from({length:8}, () => ensureIdentity()));
+    expect(new Set(identities.map(i => i.clientId)).size).toBe(1);
+    expect(identities[0].clientId).toBe(await publicKeyId(identities[0].publicKey));
+    expect(identities[0].privateKey.d).not.toBe(identities[0].clientId);
+  });
+  it('preserves the presence preference through normalized settings writes', async () => {
+    mockStorage({settings:{sharePresence:false,serverUrl:'wss://h.dev'}});
+    await updateSettings({deviceName:'A'});
+    expect((await loadSettings()).sharePresence).toBe(false);
+    await updateSettings({sharePresence:true});
+    expect((await loadSettings()).sharePresence).toBe(true);
+  });
+  it('polls for the FIRST friend acceptance, without requiring an existing friend', async () => {
+    const store = mockStorage({settings:{serverUrl:'wss://h.dev',sharePresence:true,deviceName:'A'},friends:[]});
+    fetchMock.mockResolvedValue({ok:true,json:async()=>({token:'f'.repeat(64)})});
+    const create = vi.spyOn(browser.alarms,'create');
+    let response: any;
+    await handleAddFriendLink(r => { response = r; });
+    expect(response.link).toContain('&t='+'f'.repeat(64));
+    expect(response.link).not.toContain((await ensureIdentity()).privateKey.d);
+    expect(store.get('friendInviteUntil')).toBeGreaterThan(Date.now());
+    expect(create).toHaveBeenCalledWith('syncwatch-presence',expect.any(Object));
+  });
+  it('keeps a failed acceptance in the inbox so the user can retry', async () => {
+    const store = mockStorage({settings:{serverUrl:'wss://h.dev'},friends:[],friendInbox:[{id:'a'.repeat(64),name:'A',serverUrl:'wss://h.dev',inviteToken:'f'.repeat(64),ts:1}]});
+    fetchMock.mockResolvedValue({ok:false});
+    await expect(handleAcceptFriend('a'.repeat(64))).rejects.toThrow('Не удалось принять');
+    expect(store.get('friends')).toEqual([]);
+    expect(store.get('friendInbox')).toHaveLength(1);
+  });
+  it('serializes simultaneous inbox updates instead of losing requests', async () => {
+    const store = mockStorage({friends:[],friendInbox:[]});
+    await Promise.all(['a','b'].map(x => handleFriendRequestIncoming({kind:'friend-request-incoming',id:x.repeat(64),name:x,serverUrl:'wss://h.dev',inviteToken:'f'.repeat(64)})));
+    expect(store.get('friendInbox')).toHaveLength(2);
+  });
+  it('delivers status changes to content scripts in tabs, not runtime.sendMessage', async () => {
+    mockStorage({friends:[],friendInbox:[]});
+    vi.spyOn(browser.tabs,'query').mockResolvedValue([{id:10},{id:20}] as chrome.tabs.Tab[]);
+    const send = vi.spyOn(browser.tabs,'sendMessage').mockResolvedValue(undefined);
+    await pushFriendsStatus();
+    expect(send).toHaveBeenCalledWith(10,expect.objectContaining({kind:'friends-status'}));
+    expect(send).toHaveBeenCalledWith(20,expect.objectContaining({kind:'friends-status'}));
+  });
+  it('does not poll status when sharing is disabled', async () => {
+    mockStorage({settings:{serverUrl:'wss://h.dev',sharePresence:false},friends:[friend('a')]});
+    await tickPresence(); expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('stops polling after the first unused invitation expires', async () => {
+    mockStorage({settings:{serverUrl:'wss://h.dev',sharePresence:true},friends:[],friendInviteUntil:Date.now()-1});
+    const clear = vi.spyOn(browser.alarms,'clear');
+    await tickPresence();
+    expect(clear).toHaveBeenCalledWith('syncwatch-presence');
+  });
+  it('does not resurrect a removed friend when acknowledgement was lost', async () => {
+    const store = mockStorage({settings:{serverUrl:'wss://h.dev',sharePresence:true},friends:[]});
+    const message = {from:'a'.repeat(64),fromName:'A',kind:'accept',ts:123};
+    fetchMock.mockImplementation(async (url: string) => ({ok:!url.endsWith('/ack'),json:async()=>({views:{},inbox:[message]})}));
+    await pollPresence(); expect(store.get('friends')).toHaveLength(1);
+    await handleRemoveFriend(message.from);
+    await pollPresence(); expect(store.get('friends')).toEqual([]);
   });
 });

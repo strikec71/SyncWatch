@@ -85,8 +85,8 @@ export const TEMPLATE = `
      ОТДЕЛЬНО от .collapsed (ручной тумблер пользователя) — это авто-состояние; клик по
      шапке разворачивает (overlay.ts: expandIfCompact). */
   .panel.compact { width: auto; }
-  .panel.compact .body,
-  .panel.compact .toasts { display: none; }
+  .panel.compact .body { display: none; }
+  .panel.compact .toasts { max-width: 300px; padding-bottom: 8px; }
   .panel.compact .head { padding: 8px 11px; cursor: pointer; }
   .panel.compact .title { font-size: 10px; letter-spacing: 2px; }
   .panel.compact .chatbtn,
@@ -237,10 +237,11 @@ export const TEMPLATE = `
   </div>
   <div class="syncline" id="sync" data-state="off"></div>
 
-  <div class="toasts" id="toasts"></div>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
   <div class="body">
-    <div class="status"><span class="dot" id="dot" data-state="off"></span><span id="s">Не подключено</span></div>
+    <a id="update" href="https://chromewebstore.google.com/" target="_blank" rel="noopener noreferrer" style="display:none;color:inherit">Доступна новая версия</a>
+    <div class="status"><span class="dot" id="dot" data-state="off"></span><span id="s" role="status" aria-live="polite">Не подключено</span></div>
 
     <span class="eyebrow" style="margin-top:10px">Участники</span>
     <div class="roster" id="roster"></div>
@@ -248,10 +249,11 @@ export const TEMPLATE = `
     <button class="btn mode" id="mode" type="button" style="display:none">Смотреть соло</button>
 
     <div class="field">
-      <span class="eyebrow">Комната</span>
+      <span class="eyebrow">Код доступа (не передавайте посторонним)</span>
       <div class="row">
-        <input id="room" type="text" autocomplete="off" spellcheck="false" placeholder="код" />
-        <button class="btn mini" id="create" type="button" title="Сгенерировать код комнаты">Создать комнату</button>
+        <input id="room" aria-label="Секретный код комнаты" type="text" autocomplete="off" spellcheck="false" placeholder="код" />
+        <button class="btn mini" id="create" type="button" title="Сгенерировать секретный код комнаты">Код</button>
+
       </div>
     </div>
 
@@ -270,7 +272,7 @@ export const TEMPLATE = `
       <summary>Чат</summary>
       <div class="chatlog" id="chatlog"></div>
       <div class="row">
-        <input id="chatinput" type="text" disabled placeholder="Текстовый чат — скоро" />
+        <input id="chatinput" aria-label="Сообщение в комнату" type="text" maxlength="200" disabled placeholder="Сообщение (до 200 символов)" />
         <button class="btn mini" id="chatsend" type="button" disabled>Отправить</button>
       </div>
     </details>
@@ -281,16 +283,18 @@ export const TEMPLATE = `
       <button class="btn" id="friend-add" type="button" style="width:100%">Добавить друга</button>
     </details>
 
+
     <details>
       <summary>Настройки</summary>
       <div class="field"><span class="eyebrow">Имя устройства</span>
-        <input id="dev" type="text" autocomplete="off" spellcheck="false" /></div>
+        <input id="dev" aria-label="Имя устройства" type="text" autocomplete="off" spellcheck="false" /></div>
       <div class="field"><span class="eyebrow">Сервер</span>
-        <input id="serverUrl" type="text" autocomplete="off" spellcheck="false" placeholder="wss://…" /></div>
+        <input id="serverUrl" aria-label="Адрес сервера" type="text" autocomplete="off" spellcheck="false" placeholder="wss://…" /></div>
       <div class="field"><span class="eyebrow">Порог рассинхрона, с</span>
-        <input id="drift" type="number" step="0.5" min="0" /></div>
+        <input id="drift" aria-label="Порог рассинхрона в секундах" type="number" step="0.5" min="0" /></div>
       <label class="chk" style="margin-top:0" title="Показывает друзьям, что вы онлайн и в комнате, и обновляет их статусы у вас. Выключено — обмен presence не идёт в обе стороны.">
         <input id="share-presence" type="checkbox" /> Обмен статусом с друзьями</label>
+
     </details>
   </div>
 </div>`;

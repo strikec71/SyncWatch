@@ -1,0 +1,50 @@
+[
+  {
+    "id": "first friend invitation starts polling and keeps owner key private",
+    "observed": {
+      "alarm": true,
+      "hasToken": true
+    },
+    "pass": true
+  },
+  {
+    "id": "both background instances complete authenticated friendship",
+    "observed": {
+      "a": 1,
+      "b": 1
+    },
+    "pass": true
+  },
+  {
+    "id": "friend receives watching status and room through real Worker",
+    "observed": [
+      {
+        "status": "watching",
+        "room": "private-room"
+      }
+    ],
+    "pass": true
+  },
+  {
+    "id": "join friend opens explicit room invitation",
+    "observed": {
+      "url": "http://127.0.0.1:8787/join#r=private-room&s=ws%3A%2F%2F127.0.0.1%3A8787"
+    },
+    "pass": true
+  },
+  {
+    "id": "known public ID cannot impersonate its owner",
+    "observed": 401,
+    "pass": true
+  },
+  {
+    "id": "disabling sharing revokes room visibility",
+    "observed": "offline",
+    "pass": true
+  },
+  {
+    "id": "removed friend stays removed after subsequent query",
+    "observed": 0,
+    "pass": true
+  }
+]

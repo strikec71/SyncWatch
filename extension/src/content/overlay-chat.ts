@@ -32,6 +32,11 @@ export class OverlayChat {
   private connected = false;
   private unread = 0;
   private cooldownUntil = 0;
+  private sending = false;
+  private destroyed = false;
+  private loading = false;
+  private draftTouched = false;
+  private pending: ChatEntry[] = [];
   private onToggle: () => void;
 
   constructor(
@@ -39,6 +44,11 @@ export class OverlayChat {
     private hint: (text: string) => void,
   ) {
     this.wheel = new ChatWheel((code) => this.pick(code));
+    this.$('chatinput').addEventListener('input', () => { this.draftTouched = true; this.saveDraft(); });
+    this.$('chatsend').addEventListener('click', () => void this.sendText());
+    this.$('chatinput').addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); void this.sendText(); }
+    });
     this.$('chat-open').addEventListener('click', () => this.toggleWheel());
     // Раскрытие секции «Чат» — прочитано: сбрасываем счётчик непрочитанных.
     this.onToggle = () => this.resetUnreadIfVisible();
@@ -55,27 +65,56 @@ export class OverlayChat {
 
   /** Выбор фразы в колесе → отправка (с UI-кулдауном; бэкграунд гейтит повторно). */
   private pick(code: string): void {
-    const now = Date.now();
-    if (now < this.cooldownUntil) return;
-    this.cooldownUntil = now + CHAT_COOLDOWN_MS;
-    void browser.runtime.sendMessage({ kind: 'send-quick-message', code }).catch(() => {});
+    void this.send({ kind: 'send-quick-message', code });
+  }
+  private async sendText(): Promise<void> {
+    const input = this.$('chatinput') as HTMLInputElement;
+    const text = input.value;
+    if (!text.trim() || text.length > 200) { this.hint('Введите от 1 до 200 символов'); return; }
+    if (await this.send({ kind: 'send-text-message', text }) && input.value === text) { input.value = ''; this.saveDraft(); }
+  }
+  private saveDraft(): void {
+    const text = (this.$('chatinput') as HTMLInputElement).value;
+    void browser.runtime.sendMessage({kind:'set-chat-draft',text}).catch(() => {});
+  }
+  private async send(message: { kind: 'send-quick-message'; code: string } | { kind: 'send-text-message'; text: string }): Promise<boolean> {
+    if (this.sending || Date.now() < this.cooldownUntil) { this.hint('Подождите секунду перед следующим сообщением'); return false; }
+    this.sending = true;
+    try {
+      const response = await browser.runtime.sendMessage(message) as { ok?: boolean; error?: string } | undefined;
+      if (this.destroyed) return false;
+      if (!response?.ok) { this.hint(response?.error || 'Не удалось отправить сообщение'); return false; }
+      this.cooldownUntil = Date.now() + CHAT_COOLDOWN_MS;
+      return true;
+    } catch { if (!this.destroyed) this.hint('Соединение прервано — повторите отправку'); return false; }
+    finally { this.sending = false; }
   }
 
   /** Подтянуть лог сессии при маунте (переживает ремаунт островка/перезагрузку вкладки). */
   loadLog(): void {
+    this.loading = true;
     void browser.runtime
       .sendMessage({ kind: 'get-chat-log' })
       .then((r: unknown) => {
         const entries = (r as { entries?: ChatEntry[] } | undefined)?.entries ?? [];
-        for (const e of entries) this.appendRow(e);
+        if (this.destroyed) return;
+        if (!this.draftTouched) (this.$('chatinput') as HTMLInputElement).value = (r as {draft?:string})?.draft || '';
+        const counts = new Map<string, number>();
+        for (const e of entries) { this.appendRow(e); const key = JSON.stringify(e); counts.set(key, (counts.get(key) || 0) + 1); }
+        for (const e of this.pending) {
+          const key = JSON.stringify(e), count = counts.get(key) || 0;
+          if (count) counts.set(key, count - 1); else this.appendRow(e);
+        }
+        this.pending = []; this.loading = false;
       })
-      .catch(() => { /* SW перезапускается */ });
+      .catch(() => { if (!this.destroyed) for (const entry of this.pending) this.appendRow(entry); this.pending = []; this.loading = false; });
   }
 
   /** Новая строка чата (push от хаба). Непрочитанные растут, только если строка не наша
    *  и чат сейчас не виден (свёрнут островок ИЛИ закрыта секция «Чат»). */
   onChat(entry: ChatEntry): void {
-    this.appendRow(entry);
+    if (this.destroyed) return;
+    if (this.loading) this.pending.push(entry); else this.appendRow(entry);
     if (!entry.self && !this.isVisible()) { this.unread++; this.renderBadge(); }
   }
 
@@ -96,6 +135,9 @@ export class OverlayChat {
   setStatus(st: StatusSnapshot | null): void {
     this.connected = !!st?.connected;
     const btn = this.$('chat-open');
+    (btn as HTMLButtonElement).disabled = !this.connected;
+    (this.$('chatinput') as HTMLInputElement).disabled = !this.connected;
+    (this.$('chatsend') as HTMLButtonElement).disabled = !this.connected;
     btn.classList.toggle('disabled', !this.connected);
     btn.title = this.connected ? 'Быстрые сообщения' : 'Подключитесь, чтобы отправлять сообщения';
     if (!this.connected) this.wheel.close();
@@ -106,7 +148,7 @@ export class OverlayChat {
     const panel = this.shadow.querySelector('.panel');
     const collapsed = panel?.classList.contains('collapsed') ?? true;
     const box = this.$('chatbox') as HTMLDetailsElement;
-    return !collapsed && box.open;
+    return !collapsed && !panel?.classList.contains('compact') && box.open;
   }
 
   /** Сброс непрочитанных, если чат сейчас виден (зовётся на toggle секции и разворот панели). */
@@ -122,6 +164,7 @@ export class OverlayChat {
   }
 
   destroy(): void {
+    this.destroyed = true; this.pending = [];
     this.$('chatbox').removeEventListener('toggle', this.onToggle);
     this.wheel.close();
   }

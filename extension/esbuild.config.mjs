@@ -1,19 +1,15 @@
-// Сборка расширения: бандлит TS-точки входа в dist/<target>/ + копирует статику.
-// Цели: chrome (manifest.json) и firefox (manifest.firefox.json). По умолчанию
-// собираются обе; флаги --chrome / --firefox ограничивают одной.
-// Запуск: `node esbuild.config.mjs` или `--watch`.
-
+// Сборка только Chrome MV3 в dist/chrome.
 import * as esbuild from 'esbuild';
 import { cp, mkdir, rm } from 'node:fs/promises';
 
 const watch = process.argv.includes('--watch');
-const onlyChrome = process.argv.includes('--chrome');
-const onlyFirefox = process.argv.includes('--firefox');
-const targets = onlyChrome ? ['chrome'] : onlyFirefox ? ['firefox'] : ['chrome', 'firefox'];
+if (process.argv.some(arg => !['--chrome', '--watch'].includes(arg) && arg.startsWith('--'))) throw new Error('Поддерживается только сборка Chrome');
+const targets = ['chrome'];
+await rm('dist/firefox', { recursive: true, force: true });
 
 async function buildTarget(target) {
   const outdir = `dist/${target}`;
-  const manifestSrc = target === 'firefox' ? 'manifest.firefox.json' : 'manifest.json';
+  const manifestSrc = 'manifest.json';
 
   await rm(outdir, { recursive: true, force: true });
   await mkdir(outdir, { recursive: true });
@@ -24,10 +20,11 @@ async function buildTarget(target) {
     entryPoints: {
       background: 'src/background/index.ts',
       content: 'src/content/index.ts',
+      fullscreen: 'src/content/fullscreen.ts',
     },
     bundle: true,
     format: 'iife',
-    target: 'chrome110', // целевой синтаксис JS (совместим и с Firefox 121+)
+    target: 'chrome120',
     outdir,
     logLevel: 'info',
   });

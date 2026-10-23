@@ -5,12 +5,14 @@
 //
 // Стиль в токенах островка (--holo). prefers-reduced-motion уважаем.
 
+import { showFloatingLayer, removeFloatingLayer } from './floating-layer';
 import { QUICK_MESSAGES } from '../shared/quick-messages';
 
 const RADIUS = 110; // px — вынос кнопок от центра
 
 export class ChatWheel {
   private host: HTMLDivElement | null = null;
+  private shadow: ShadowRoot | null = null;
   private onKey: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(private readonly onPick: (code: string) => void) {}
@@ -26,7 +28,7 @@ export class ChatWheel {
       'position:fixed;inset:auto;inset:0;margin:0;border:0;padding:0;background:transparent;' +
       'width:100vw;height:100vh;z-index:2147483646;pointer-events:auto;' +
       'max-width:none;max-height:none;overflow:visible;';
-    const shadow = host.attachShadow({ mode: 'open' });
+    const shadow = this.shadow = host.attachShadow({ mode: 'closed' });
     shadow.innerHTML = WHEEL_TEMPLATE;
 
     const backdrop = shadow.querySelector('.backdrop') as HTMLElement;
@@ -68,14 +70,12 @@ export class ChatWheel {
   close(): void {
     if (this.onKey) { document.removeEventListener('keydown', this.onKey, true); this.onKey = null; }
     const host = this.host as (HTMLElement & { hidePopover?: () => void }) | null;
-    if (host) { try { host.hidePopover?.(); } catch { /* не показан */ } host.remove(); }
-    this.host = null;
+    if (host) { removeFloatingLayer(host); host.remove(); }
+    this.host = null; this.shadow = null;
   }
 
   private showInTopLayer(): void {
-    const host = this.host as (HTMLElement & { showPopover?: () => void }) | null;
-    if (!host || typeof host.showPopover !== 'function') return;
-    try { host.showPopover(); } catch { /* уже показан */ }
+    if (this.host) showFloatingLayer(this.host, 100, this.shadow);
   }
 }
 

@@ -3,6 +3,8 @@
 // релей буфера/рекламы, гашение эха. Roster-based, адаптивный контроль (Фаза A).
 
 import browser from '../shared/browser';
+import { normalizeSyncUrl } from './nav';
+import { persistSessions } from './persistence';
 import type {
   PlayerAction,
   StateMessage,
@@ -86,6 +88,7 @@ export function isSyncNavigating(p: {
 
 /** Сессионная обёртка над isSyncNavigating (текущее время + общий TTL). */
 function navigating(s: Session): boolean {
+  if (s.pendingPageUrl) return true;
   return isSyncNavigating({
     expectedNav: s.expectedNav,
     expectedNavAt: s.expectedNavAt,
@@ -149,7 +152,7 @@ export function sendToActiveFrame(s: Session, msg: RuntimeMessage): void {
 
 /** tabId сессии фиксирован; двигаем только активный плеерный фрейм внутри вкладки. */
 function markActiveFrame(s: Session, frameId: number): void {
-  s.frameId = frameId;
+  if (s.frameId !== frameId) { s.frameId = frameId; void persistSessions().catch(() => {}); }
 }
 
 // ── Локальные события плеера → сеть ───────────────────────────────────────────
@@ -163,9 +166,10 @@ export function onPlayerEvent(s: Session, msg: PlayerEventMsg, frameId: number):
     return;
   }
 
+  if (navigating(s)) return;
   if (!canEmit(msg.action, {
     amController: amController(s),
-    detached: s.detached,
+    detached: s.detached || s.contentMismatch,
     size: s.roster.size,
   })) {
     // ⚠️ Критично для ≥3: действие НЕ ушло в сеть, но локальный плеер его уже выполнил —
@@ -183,6 +187,8 @@ export function onPlayerEvent(s: Session, msg: PlayerEventMsg, frameId: number):
     rate: msg.rate,
     paused: msg.paused,
     ts: Date.now(),
+    ...(s.pageUrl ? { pageUrl: s.pageUrl } : {}),
+    ...(s.mediaSig ? { mediaSig: s.mediaSig } : {}),
   };
   sendWire(s, wire);
 
@@ -193,7 +199,7 @@ export function onPlayerEvent(s: Session, msg: PlayerEventMsg, frameId: number):
 
 export function onBuffering(s: Session, msg: BufferingMsg, frameId: number): void {
   markActiveFrame(s, frameId);
-  if (s.detached) return;
+  if (s.detached || s.contentMismatch) return;
   const wire: BufferMessage = {
     type: 'BUFFER',
     buffering: msg.buffering,
@@ -207,10 +213,11 @@ export function onBeat(s: Session, msg: BeatMsg, frameId: number): void {
   markActiveFrame(s, frameId);
   noteActivity(s); // beat приходит ТОЛЬКО при воспроизведении → мы активно смотрим
   // BEAT шлёт ТОЛЬКО host (опорный клиент дрейфа). Не host / detached — молчим.
-  if (s.detached || !amHost(s)) return;
+  if (s.detached || s.contentMismatch || navigating(s) || !amHost(s)) return;
   const wire: BeatMessage = {
-    type: 'BEAT',
-    currentTime: msg.currentTime,
+    type: 'BEAT', revision: Math.max(0, s.revision),
+    ...(s.pageUrl ? { pageUrl: s.pageUrl } : {}),
+    ...(s.mediaSig ? { mediaSig: s.mediaSig } : {}),    currentTime: msg.currentTime,
     playing: msg.playing,
     ts: Date.now(),
   };
@@ -219,7 +226,7 @@ export function onBeat(s: Session, msg: BeatMsg, frameId: number): void {
 
 export function onAd(s: Session, msg: AdMsg, frameId: number): void {
   markActiveFrame(s, frameId);
-  if (s.detached) return;
+  if (s.detached || s.contentMismatch) return;
   const wire: AdMessage = { type: 'AD', ad: msg.ad, ts: Date.now() };
   sendWire(s, wire);
   notifyEvent(s, msg.ad ? 'У вас реклама — партнёр ждёт' : 'Ваша реклама закончилась');
@@ -234,10 +241,16 @@ const READY_RESYNC_THROTTLE_MS = 3000;
  *  presence-карте) и, если мы не-host и в синхроне, просим направленный снапшот тем же
  *  идемпотентным MODE{detached:false} → SNAPSHOT_REQ хосту → STATE в уже готовый плеер. */
 export function onVideoReady(s: Session, frameId: number): void {
-  if (framesWithVideo(s.tabId).includes(frameId)) markActiveFrame(s, frameId);
+  markActiveFrame(s, frameId);
+  if (s.pageUrl && !s.navigationOrigin) s.navigationOrigin = new URL(s.pageUrl).origin;
+  if (s.connected && !s.detached && amHost(s) && Date.now() - s.lastReadyResyncAt >= READY_RESYNC_THROTTLE_MS) {
+    s.lastReadyResyncAt = Date.now();
+    sendWire(s, { type: 'MODE', detached: false });
+    return;
+  }
   if (!readyResyncDecision({
     connected: s.connected,
-    detached: s.detached,
+    detached: s.detached || s.contentMismatch,
     amHost: amHost(s),
     now: Date.now(),
     lastAt: s.lastReadyResyncAt,
@@ -263,8 +276,14 @@ export function requestGateResync(s: Session): void {
 
 export function applyRemoteState(s: Session, state: StateMessage): void {
   noteActivity(s); // партнёр действует → комната активна, простой сбрасываем даже в соло
-  if (s.detached) return; // соло: смотрим независимо, чужое не применяем
-  if (state.to != null && state.to !== s.myConnId) return; // чужой направленный снапшот
+  if (s.detached || s.contentMismatch) return; // соло: смотрим независимо, чужое не применяем
+  if (state.to != null && state.to !== s.myConnId) return;
+  if (state.revision !== undefined) {
+    if (state.revision < s.revision || (state.revision === s.revision && state.to === undefined)) return;
+    s.revision = state.revision;
+  }
+  if ((state.mediaSig && s.mediaSig && state.mediaSig !== s.mediaSig) ||
+      (state.pageUrl && s.pageUrl && state.pageUrl !== s.pageUrl)) return; // чужой направленный снапшот
   // Пока навигируемся по NAV партнёра (страница ИЛИ серия/озвучка) — этот STATE адресован
   // СТАРОМУ документу/серии. Дропаем: свежий приедет после готовности нового плеера
   // (video-ready → resync Фазы 1). TTL страхует от залипшего expected (Фазы 2/3).
@@ -278,20 +297,19 @@ export function applyRemoteState(s: Session, state: StateMessage): void {
     currentTime: state.currentTime,
     rate: state.rate,
     paused: state.paused,
+    pauseOnly: state.pauseOnly,
   });
-  notifyEvent(s, partnerActionText(s, state));
+  if (state.from !== s.myConnId) notifyEvent(s, partnerActionText(s, state));
   notePeerPaused(s, state.from, state.paused);
 }
 
 export function onRemoteBuffer(s: Session, msg: BufferMessage): void {
-  if (s.detached) return;
-  sendToActiveFrame(s, { kind: 'buffer-control', buffering: msg.buffering });
+  if (s.detached || s.contentMismatch) return;
   notePeerBuffer(s, msg.from, msg.buffering);
 }
 
 export function onRemoteAd(s: Session, msg: AdMessage): void {
-  if (s.detached) return;
-  sendToActiveFrame(s, { kind: 'ad-control', ad: msg.ad });
+  if (s.detached || s.contentMismatch) return;
   const who = peerName(s, msg.from);
   notifyEvent(s, msg.ad ? `${who} смотрит рекламу — ждём` : 'Реклама у партнёра закончилась');
   notePeerAd(s, msg.from, msg.ad);
@@ -300,7 +318,9 @@ export function onRemoteAd(s: Session, msg: AdMessage): void {
 export function onRemoteBeat(s: Session, msg: BeatMessage): void {
   noteActivity(s); // входящий BEAT = партнёр играет → комната активна
   // Дрейф правит только НЕ host и НЕ detached. Host — источник, себя не корректирует.
-  if (s.detached || amHost(s)) return;
+  if (s.detached || s.contentMismatch || amHost(s)) return;
+  if (msg.revision !== undefined && msg.revision < s.revision) return;
+  if ((msg.pageUrl && msg.pageUrl !== s.pageUrl) || (msg.mediaSig && msg.mediaSig !== s.mediaSig)) return;
   // Во время синхро-навигации (страница/серия) BEAT опорного адресован НОВОМУ контенту —
   // не даём дрейфу утянуть нашу позицию (напр. авто-переход партнёра на след. серию в 0:00,
   // пока мы ещё на старой). Свежий BEAT применится после готовности нового плеера.
@@ -322,7 +342,14 @@ const SNAPSHOT_RETRY_MS = 1500;
  *  Неготовый снимок (ready:false) отбраковываем и один раз повторяем. */
 export async function pushSnapshot(s: Session, req: SnapshotReqMessage, attempt = 0): Promise<void> {
   if (!amHost(s)) return;
+  const socket = s.ws;
+  const revision = req.revision ?? Math.max(0, s.revision);
   const now = Date.now();
+  if (s.pageUrl) {
+    try { const tab = await browser.tabs.get(s.tabId); if (tab.url && normalizeSyncUrl(tab.url) !== s.pageUrl) return; }
+    catch { return; }
+  }
+  if (s.ws !== socket || !amHost(s) || s.revision > revision) return;
   // Синхрон страницы (Фаза 2): перед позицией отдаём новичку АДРЕС страницы комнаты
   // направленным NAV — иначе он остался бы на дефолтной серии (URL плеера её не несёт).
   // Только раз (attempt===0). Fix 2: пропускаем, пока хост сам в процессе перехода
@@ -330,7 +357,7 @@ export async function pushSnapshot(s: Session, req: SnapshotReqMessage, attempt 
   if (attempt === 0 && shouldPushNavInSnapshot({
     value: s.pageUrl, expected: s.expectedNav, expectedAt: s.expectedNavAt, now, ttl: EXPECTED_NAV_TTL_MS,
   })) {
-    sendWire(s, { type: 'NAV', scope: 'page', url: s.pageUrl, ts: now, to: req.target });
+    sendWire(s, { type: 'NAV', scope: 'page', url: s.pageUrl, ts: now, to: req.target, revision });
   }
   // Затем — выбор серии/сезона/озвучки (Фаза 3), чтобы новичок оказался НЕ на дефолтной
   // серии. Порядок: страница → серия → позиция. Плеер сменит источник на месте, позицию
@@ -338,14 +365,14 @@ export async function pushSnapshot(s: Session, req: SnapshotReqMessage, attempt 
   if (attempt === 0 && shouldPushNavInSnapshot({
     value: s.mediaSig, expected: s.expectedSig, expectedAt: s.expectedSigAt, now, ttl: EXPECTED_NAV_TTL_MS,
   })) {
-    sendWire(s, { type: 'NAV', scope: 'player', sig: s.mediaSig, ts: now, to: req.target });
+    sendWire(s, { type: 'NAV', scope: 'player', sig: s.mediaSig, ts: now, to: req.target, revision });
   }
   const frameId = pickSnapshotFrame(s.frameId, framesWithVideo(s.tabId));
   try {
     const snap = (await browser.tabs.sendMessage(
       s.tabId, { kind: 'get-snapshot' }, { frameId },
     )) as PlayerSnapshot | undefined;
-    if (!snap) return;
+    if (!snap || s.ws !== socket || !amHost(s) || s.revision > revision) return;
     if (snap.ready === false) {
       // Плеер новичка/хоста ещё не доиграл метаданные — не шлём мусор в 0:00.
       if (attempt === 0) setTimeout(() => void pushSnapshot(s, req, 1), SNAPSHOT_RETRY_MS);
@@ -359,6 +386,9 @@ export async function pushSnapshot(s: Session, req: SnapshotReqMessage, attempt 
       paused: snap.paused,
       ts: Date.now(),
       to: req.target,
+      revision,
+      ...(s.pageUrl ? { pageUrl: s.pageUrl } : {}),
+      ...(s.mediaSig ? { mediaSig: s.mediaSig } : {}),
     };
     sendWire(s, wire);
   } catch { /* фрейма/снимка нет — пропускаем (R4) */ }

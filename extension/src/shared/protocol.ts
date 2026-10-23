@@ -23,6 +23,8 @@ export interface RosterPeer {
   isHost: boolean;
   hasControl: boolean;
   detached: boolean;
+  buffering?: boolean;
+  ad?: boolean;
 }
 
 /** server → client при ЛЮБОМ изменении roster (join/leave/host/control/mode).
@@ -39,6 +41,10 @@ export interface RosterMessage {
  *  `to?`  — направленная отправка (host → один connId), для снапшотов. Ставит клиент.
  *  `from?`— connId отправителя, ВСТАВЛЯЕТСЯ СЕРВЕРОМ при релее. На хопе client→server отсутствует. */
 export interface StateMessage {
+  revision?: number;
+  pauseOnly?: boolean;
+  pageUrl?: string;
+  mediaSig?: string;
   type: 'STATE';
   action: PlayerAction;
   currentTime: number;
@@ -65,6 +71,7 @@ export interface ModeMessage {
 /** server → host. «Запушь STATE-снапшот участнику `target`.»
  *  Шлётся при новом join и при un-detach. Host отвечает STATE{...,to:target}. */
 export interface SnapshotReqMessage {
+  revision?: number;
   type: 'SNAPSHOT_REQ';
   target: number;
 }
@@ -80,6 +87,9 @@ export interface BufferMessage {
 
 /** Heartbeat коррекции дрейфа — шлёт ТОЛЬКО host. `from` вставляет сервер. */
 export interface BeatMessage {
+  revision?: number;
+  pageUrl?: string;
+  mediaSig?: string;
   type: 'BEAT';
   currentTime: number;
   playing: boolean;
@@ -101,6 +111,7 @@ export interface AdMessage {
  *  (host→новичку в снапшоте) выставляет клиент; `from` вставляет сервер при релее.
  *  Одно из `url`/`sig` по scope: page → `url` (≤2048), player → `sig` (≤512). */
 export interface NavMessage {
+  revision?: number;
   type: 'NAV';
   scope: 'page' | 'player';
   url?: string;
@@ -173,6 +184,17 @@ export type WireMessage = ClientMessage | ServerMessage;
 // его как опциональное число, если оно синтаксически валидно.
 // ─────────────────────────────────────────────────────────────────────────────
 
+export const MAX_WIRE_LENGTH = 8192;
+export const MAX_ROOM_LENGTH = 128;
+export const MAX_NAME_LENGTH = 64;
+export const validRoom = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v);
+const validTime = (v: unknown): v is number => isNum(v) && v >= 0 && v <= 31536000;
+const validRevision = (v: unknown): boolean => v === undefined || (Number.isSafeInteger(v) && (v as number) >= 0);
+const validUrl = (v: unknown): v is string => {
+  if (!isStr(v) || v.length > 2048) return false;
+  try { const u = new URL(v); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password; } catch { return false; }
+};
+
 const ACTIONS: ReadonlySet<string> = new Set(['play', 'pause', 'seek', 'rate']);
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -188,7 +210,7 @@ function isNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 function isInt(v: unknown): v is number {
-  return typeof v === 'number' && Number.isInteger(v);
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 }
 /** optional finite number: absent → ok, present → must be finite. */
 function optNum(v: unknown): boolean {
@@ -203,10 +225,10 @@ function validRosterPeer(v: unknown): v is RosterPeer {
   return (
     isObj(v) &&
     isInt(v.id) &&
-    isStr(v.name) &&
+    isStr(v.name) && v.name.length <= MAX_NAME_LENGTH &&
     isBool(v.isHost) &&
     isBool(v.hasControl) &&
-    isBool(v.detached)
+    isBool(v.detached) && (v.buffering === undefined || isBool(v.buffering)) && (v.ad === undefined || isBool(v.ad))
   );
 }
 
@@ -217,6 +239,7 @@ function validRosterPeer(v: unknown): v is RosterPeer {
 export function parseWire(raw: unknown): WireMessage | null {
   let obj: unknown = raw;
   if (isStr(raw)) {
+    if (raw.length > MAX_WIRE_LENGTH) return null;
     try {
       obj = JSON.parse(raw);
     } catch {
@@ -225,9 +248,17 @@ export function parseWire(raw: unknown): WireMessage | null {
   }
   if (!isObj(obj) || !isStr(obj.type)) return null;
 
+  if (!validRevision(obj.revision)) return null;
+  const revision = obj.revision === undefined ? {} : { revision: obj.revision as number };
+  if (obj.pageUrl !== undefined && !validUrl(obj.pageUrl)) return null;
+  if (obj.mediaSig !== undefined && (!isStr(obj.mediaSig) || obj.mediaSig.length > 512)) return null;
+  const content = {
+    ...(obj.pageUrl === undefined ? {} : { pageUrl: obj.pageUrl as string }),
+    ...(obj.mediaSig === undefined ? {} : { mediaSig: obj.mediaSig as string }),
+  };
   switch (obj.type) {
     case 'JOIN':
-      return isStr(obj.room) && isStr(obj.name)
+      return validRoom(obj.room) && isStr(obj.name) && obj.name.length <= MAX_NAME_LENGTH
         ? { type: 'JOIN', room: obj.room, name: obj.name }
         : null;
 
@@ -235,17 +266,21 @@ export function parseWire(raw: unknown): WireMessage | null {
       if (
         !isStr(obj.action) ||
         !ACTIONS.has(obj.action) ||
-        !isNum(obj.currentTime) ||
+        !validTime(obj.currentTime) ||
         !isBool(obj.paused) ||
         !isNum(obj.ts) ||
-        !optNum(obj.rate) ||
+        !(obj.rate === undefined || (isNum(obj.rate) && obj.rate >= 0.25 && obj.rate <= 4)) ||
+        (obj.action === 'play' && obj.paused !== false) ||
+        (obj.action === 'pause' && obj.paused !== true) ||
+        (obj.pauseOnly !== undefined && !isBool(obj.pauseOnly)) ||
         !optInt(obj.to) ||
         !optInt(obj.from)
       ) {
         return null;
       }
       return {
-        type: 'STATE',
+        type: 'STATE', ...revision, ...content,
+        ...(obj.pauseOnly === undefined ? {} : { pauseOnly: obj.pauseOnly as boolean }),
         action: obj.action as PlayerAction,
         currentTime: obj.currentTime,
         paused: obj.paused,
@@ -264,16 +299,16 @@ export function parseWire(raw: unknown): WireMessage | null {
       return isBool(obj.detached) ? { type: 'MODE', detached: obj.detached } : null;
 
     case 'SNAPSHOT_REQ':
-      return isInt(obj.target) ? { type: 'SNAPSHOT_REQ', target: obj.target } : null;
+      return isInt(obj.target) ? { type: 'SNAPSHOT_REQ', target: obj.target, ...revision } : null;
 
     case 'ROSTER': {
-      if (!isInt(obj.self) || !Array.isArray(obj.peers)) return null;
+      if (!isInt(obj.self) || !Array.isArray(obj.peers) || obj.peers.length > 10 || new Set(obj.peers.map((p: any) => p?.id)).size !== obj.peers.length) return null;
       if (!obj.peers.every(validRosterPeer)) return null;
       return { type: 'ROSTER', self: obj.self, peers: obj.peers as RosterPeer[] };
     }
 
     case 'BUFFER':
-      return isBool(obj.buffering) && isNum(obj.currentTime) && isNum(obj.ts) && optInt(obj.from)
+      return isBool(obj.buffering) && validTime(obj.currentTime) && isNum(obj.ts) && optInt(obj.from)
         ? {
             type: 'BUFFER',
             buffering: obj.buffering,
@@ -284,9 +319,9 @@ export function parseWire(raw: unknown): WireMessage | null {
         : null;
 
     case 'BEAT':
-      return isNum(obj.currentTime) && isBool(obj.playing) && isNum(obj.ts) && optInt(obj.from)
+      return validTime(obj.currentTime) && isBool(obj.playing) && isNum(obj.ts) && optInt(obj.from)
         ? {
-            type: 'BEAT',
+            type: 'BEAT', ...revision, ...content,
             currentTime: obj.currentTime,
             playing: obj.playing,
             ts: obj.ts,
@@ -312,12 +347,12 @@ export function parseWire(raw: unknown): WireMessage | null {
         return null;
       }
       const tail = {
-        ts: obj.ts,
+        ts: obj.ts, ...revision,
         ...(obj.to !== undefined ? { to: obj.to as number } : {}),
         ...(obj.from !== undefined ? { from: obj.from as number } : {}),
       };
       if (obj.scope === 'page') {
-        return isStr(obj.url) && obj.url.length <= 2048
+        return validUrl(obj.url)
           ? { type: 'NAV', scope: 'page', url: obj.url, ...tail }
           : null;
       }
@@ -338,8 +373,8 @@ export function parseWire(raw: unknown): WireMessage | null {
       const hasCode = obj.code !== undefined;
       const hasText = obj.text !== undefined;
       if (!hasCode && !hasText) return null;
-      if (hasCode && (!isStr(obj.code) || obj.code.length > CHAT_CODE_MAX)) return null;
-      if (hasText && (!isStr(obj.text) || obj.text.length > CHAT_TEXT_MAX)) return null;
+      if (hasCode && (!isStr(obj.code) || (!obj.code.trim() || obj.code.length > CHAT_CODE_MAX))) return null;
+      if (hasText && (!isStr(obj.text) || (!obj.text.trim() || obj.text.length > CHAT_TEXT_MAX))) return null;
       return {
         type: 'CHAT',
         ...(hasCode ? { code: obj.code as string } : {}),

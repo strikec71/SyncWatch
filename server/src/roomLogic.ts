@@ -17,6 +17,8 @@ export interface PeerState {
   isHost: boolean;
   hasControl: boolean;
   detached: boolean;
+  buffering?: boolean;
+  ad?: boolean;
 }
 
 /**
@@ -60,6 +62,8 @@ export function shapeRoster(peers: PeerState[], self: number): RosterMessage {
     isHost: p.isHost,
     hasControl: p.hasControl,
     detached: p.detached,
+    ...(p.buffering === undefined ? {} : { buffering: p.buffering }),
+    ...(p.ad === undefined ? {} : { ad: p.ad }),
   }));
   return { type: 'ROSTER', self, peers: shaped };
 }

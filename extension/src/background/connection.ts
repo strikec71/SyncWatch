@@ -4,6 +4,11 @@
 // Аларм-тики (keepalive/reconnect) итерируют все сессии — их гоняет index.ts.
 
 import browser from '../shared/browser';
+import { normalizeServerUrl } from '../shared/validation';
+import { validRoom } from '../shared/protocol';
+import { checkUpdates } from './notifier';
+import { queryVideoAvailable } from './presence';
+import { persistSessions } from './persistence';
 import { loadSettings, ensureDeviceName } from '../shared/settings';
 import { parseWire } from '../shared/protocol';
 import type {
@@ -61,20 +66,28 @@ export async function connect(
   room: string,
   serverUrl?: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  const generation = ++s.connectGeneration;
   const settings = await loadSettings();
+  if (generation !== s.connectGeneration) return { ok: false, error: 'Подключение отменено' };
   const useRoom = (room || s.room).trim();
-  const useServer = (serverUrl || settings.serverUrl).replace(/\/+$/, '');
-  if (!useRoom) return { ok: false, error: 'Не задан код комнаты' };
-  if (!useServer) return { ok: false, error: 'Не задан адрес сервера' };
+  const useServer = normalizeServerUrl(serverUrl || s.serverUrl || settings.serverUrl);
+  if (!validRoom(useRoom)) return { ok: false, error: 'Код комнаты: 1–128 латинских букв, цифр, дефисов или _' };
+  if (!useServer) return { ok: false, error: 'Укажите корректный wss:// сервер (ws:// — только localhost)' };
 
+  if (s.room !== useRoom || s.serverUrl !== useServer) { s.chatLog = []; s.chatDraft = ''; s.lastChatSentAt = 0; s.navigationOrigin = ''; s.expectedNav = null; s.expectedSig = null; s.mismatchSig = null; }
   teardownSocket(s); // тихо снимаем старый сокет, не трогая backoff/intentionalClose
 
-  s.deviceName = await ensureDeviceName();
+  const name = await ensureDeviceName();
+  if (generation !== s.connectGeneration) return { ok: false, error: 'Подключение отменено' };
+  s.deviceName = name;
   s.autoConnect = settings.autoConnect;
   s.intentionalClose = false;
   s.idleClosed = false; // явное/авто-подключение снимает idle-состояние
   s.driftThreshold = settings.driftThreshold;
-  s.room = useRoom;
+  s.room = useRoom; s.serverUrl = useServer;
+  if (s.pageUrl && queryVideoAvailable(s.tabId)) s.navigationOrigin = new URL(s.pageUrl).origin;
+  s.phase = 'connecting'; s.error = ''; s.revision = -1; s.contentMismatch = false;
+  void persistSessions().catch(() => {});
 
   const url = `${useServer}/room/${encodeURIComponent(useRoom)}`;
 
@@ -90,37 +103,52 @@ export async function connect(
       s.connected = true;
       s.lastRecvAt = Date.now();
       s.lastActivityAt = Date.now(); // отсчёт простоя идёт от подключения, даже без единого события
-      s.reconnectAttempt = 0; // успешное соединение сбрасывает backoff
+      // Backoff is reset only after ROSTER confirms JOIN.
       sendWire(s, { type: 'JOIN', room: useRoom, name: s.deviceName });
       if (s.detached) sendWire(s, { type: 'MODE', detached: true }); // соло переживает реконнект
-      browser.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // keepalive; браузер клампит к минимуму (Chrome ~30с, FF ~60с)
-      notifyEvent(s, `Подключено к комнате «${useRoom}»`);
+      browser.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 }); // keepalive; браузер клампит к минимуму (Chrome ~30с, FF ~60с)
+      notifyEvent(s, `Соединяемся с комнатой «${useRoom}»…`);
       notifyPopup(s);
     });
     ws.addEventListener('message', (evt) => { if (s.ws === ws) onWire(s, evt.data); });
-    ws.addEventListener('close', () => { if (s.ws === ws) onSocketDown(s); });
+    ws.addEventListener('close', (event) => {
+      if (s.ws !== ws) return;
+      if ([1008, 1009, 1013].includes(event.code)) {
+        s.intentionalClose = true; cancelReconnect(s); teardownSocket(s);
+        s.phase = 'error'; s.error = event.code === 1013 ? 'Комната заполнена (максимум 10 участников)' : 'Сервер отклонил подключение: ' + event.reason;
+        void persistSessions().catch(() => {}); notifyPopup(s); return;
+      }
+      onSocketDown(s);
+    });
     ws.addEventListener('error', () => { if (s.ws === ws) onSocketDown(s); });
 
+    s.openTimer = setTimeout(() => { if (s.ws === ws && s.phase !== 'joined') onSocketDown(s); }, 15000);
+    notifyPopup(s);
     return { ok: true };
   } catch (e) {
+    s.phase = 'error'; s.error = String(e); notifyPopup(s);
     return { ok: false, error: String(e) };
   }
 }
 
 /** Пользователь отключил вкладку: реконнекта нет, backoff сброшен, сокет снят. */
 export function disconnect(s: Session): void {
+  ++s.connectGeneration;
   s.intentionalClose = true;
   cancelReconnect(s);
   teardownSocket(s);
+  s.phase = 'disconnected';
+  void persistSessions().catch(() => {});
 }
 
 /** Снять текущий сокет и связанное состояние сессии. НЕ трогает backoff/intentionalClose. */
 function teardownSocket(s: Session): void {
+  if (s.openTimer != null) { clearTimeout(s.openTimer); s.openTimer = null; }
   if (s.ws) {
     try { s.ws.close(); } catch { /* already closed */ }
   }
   s.ws = null;
-  s.connected = false;
+  s.connected = false; s.phase = 'disconnected';
   s.myConnId = -1;
   s.roster.clear();
   clearBlocks(s); // сброс per-peer блоков + гашение баннера
@@ -129,8 +157,9 @@ function teardownSocket(s: Session): void {
 
 /** Сокет упал (close/error/watchdog): снимаем и, если уместно, реконнектим. */
 function onSocketDown(s: Session): void {
-  if (!s.intentionalClose) notifyEvent(s, 'Соединение потеряно — переподключаюсь…');
+  if (!s.intentionalClose) notifyEvent(s, s.autoConnect ? 'Соединение потеряно — переподключаюсь…' : 'Соединение потеряно');
   teardownSocket(s);
+  s.phase = s.autoConnect && !s.intentionalClose ? 'retrying' : 'disconnected'; notifyPopup(s);
   scheduleReconnect(s);
 }
 
@@ -179,7 +208,7 @@ export function reconnectTick(s: Session): void {
     idleClosed: s.idleClosed,
   });
   if (decision === 'wait') return;      // SW жив, setTimeout дожмёт сам
-  if (decision === 'connect') void connect(s, s.room); // connect() сам снимет полу-открытый сокет
+  if (decision === 'connect' && s.phase !== 'connecting') void connect(s, s.room); // connect() сам снимет полу-открытый сокет
   // 'clear' — этой сессии реконнект не нужен; аларм гасит index.ts, когда он не нужен НИКОМУ.
 }
 
@@ -217,8 +246,9 @@ export function checkIdle(s: Session): void {
   // idle-закрытие (НЕ ручное): intentionalClose НЕ ставим, реконнект по таймеру не планируем.
   // Сокет рвём (экономим трафик); вернёмся автоматически при первой активности (maybeResume).
   s.idleClosed = true;
+  void persistSessions().catch(() => {});
   cancelReconnect(s); // снять возможный отложенный таймер — не реконнектить по расписанию
-  teardownSocket(s);  // close()→'close' придёт уже с s.ws===null (zombie-gate) → onSocketDown не сработает
+  teardownSocket(s); s.phase = 'idle'; notifyPopup(s); // close()→'close' придёт уже с s.ws===null (zombie-gate) → onSocketDown не сработает
 }
 
 /** Реальная активность просмотра после idle-закрытия → бесшовно переподключаемся.
@@ -238,6 +268,9 @@ function onWire(s: Session, raw: unknown): void {
 
   switch (msg.type) {
     case 'ROSTER':
+      if (s.openTimer != null) { clearTimeout(s.openTimer); s.openTimer = null; }
+      s.phase = 'joined'; s.reconnectAttempt = 0;
+      void checkUpdates(s);
       applyRoster(s, msg as RosterMessage);
       break;
     case 'STATE':
@@ -253,6 +286,7 @@ function onWire(s: Session, raw: unknown): void {
       onRemoteBeat(s, msg as BeatMessage);
       break;
     case 'NAV':
+      if (msg.revision !== undefined) { if (msg.revision < s.revision) return; s.revision = msg.revision; }
       void applyRemoteNav(s, msg as NavMessage);
       break;
     case 'CHAT':

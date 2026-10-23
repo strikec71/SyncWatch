@@ -1,0 +1,43 @@
+[
+  {
+    "id": "AUD-01 browser buffering pauses",
+    "observed": false,
+    "expected": true,
+    "pass": false
+  },
+  {
+    "id": "AUD-01 browser advertisement pauses",
+    "observed": false,
+    "expected": true,
+    "pass": false
+  },
+  {
+    "id": "AUD-01 browser clearing hold resumes",
+    "observed": false,
+    "expected": true,
+    "pass": false
+  },
+  {
+    "id": "AUD-04 browser snapshot rate",
+    "observed": 1,
+    "expected": 1.5,
+    "pass": false
+  },
+  {
+    "id": "AUD-05 browser ad timeline untouched",
+    "observed": {
+      "before": 20.11057,
+      "after": 80,
+      "readyState": 1,
+      "pending": false
+    },
+    "expected": "same position",
+    "pass": false
+  },
+  {
+    "id": "Extension E2E",
+    "observed": "NOT RUN: environment administrator disables unpacked extension loading",
+    "expected": "run on a permitted Chrome/Firefox test environment",
+    "pass": null
+  }
+]

@@ -24,7 +24,7 @@ export function shouldDeferApply(p: { hasVideo: boolean; readyState: number; dur
   return !p.hasVideo || p.readyState < 1 || !p.durationFinite;
 }
 
-interface PendingApply { action: PlayerAction; currentTime: number; rate?: number; paused: boolean; }
+interface PendingApply { action: PlayerAction; currentTime: number; rate?: number; paused: boolean; pauseOnly?: boolean; }
 
 const AD_POLL_MS = 500; // как часто проверяем состояние рекламы
 const PRESENCE_REASSERT_MS = 4000; // ре-репорт «видео есть» — восстановление после выгрузки SW
@@ -39,6 +39,11 @@ const NUDGE_FACTOR = 0.08;  // ±8% к базовой скорости — пл�
 
 export class PlayerController {
   private video: HTMLVideoElement | null = null;
+  private scanDirty = true;
+  private desiredPaused: boolean | null = null;
+  private timers: number[] = [];
+  private scanTimer: number | null = null;
+  private gestureRetry: (() => void) | null = null;
   private isApplyingRemote = false;
   private applyTimer: number | null = null;
   private observer: MutationObserver | null = null;
@@ -60,18 +65,46 @@ export class PlayerController {
   private nudger = new DriftNudger();  // плавная подстройка скоростью при умеренном дрейфе (пункт 1)
 
   start(): void {
+    if (this.observer) return;
+    this.scanDirty = true;
     this.scan();
-    this.observer = new MutationObserver(() => this.scan());
+    this.observer = new MutationObserver((records) => {
+      if (records.every(r => (r.target as Element).closest?.('[data-syncwatch-ui]'))) return;
+      const relevant = records.some(r => [...r.addedNodes, ...r.removedNodes].some(n =>
+        n instanceof Element && (n.tagName === 'VIDEO' || n.shadowRoot || n.querySelector('video'))));
+      if (!relevant && (!this.video || this.video.isConnected)) return;
+      this.scanDirty = true;
+      if (this.scanTimer != null) return;
+      this.scanTimer = window.setTimeout(() => { this.scanTimer = null; this.scan(); }, 150);
+    });
     this.observer.observe(document.documentElement, { childList: true, subtree: true });
     // Плееры иногда подменяют <video> без мутаций в нашем поддереве — добиваем поллингом.
-    window.setInterval(() => this.scan(), 2000);
+    this.timers.push(window.setInterval(() => this.scan(), 5000));
+    this.timers.push(window.setInterval(() => { this.scanDirty = true; this.scan(); }, 15000));
     // Heartbeat позиции: гонит content-скрипт (alarms слишком грубые, мин. 30с).
-    window.setInterval(() => this.beat(), HEARTBEAT_MS);
+    this.timers.push(window.setInterval(() => this.beat(), HEARTBEAT_MS));
     // Отслеживание рекламы (sync-aware): при своей рекламе держим партнёра на паузе.
-    window.setInterval(() => this.checkAd(), AD_POLL_MS);
+    this.timers.push(window.setInterval(() => { if (this.video) this.checkAd(); }, AD_POLL_MS));
     // Ре-репорт присутствия: восстанавливает карту в background после выгрузки SW.
-    window.setInterval(() => { if (this.hasVideo) this.sendPresence(true); }, PRESENCE_REASSERT_MS);
+    this.timers.push(window.setInterval(() => { if (this.hasVideo) this.sendPresence(true); }, PRESENCE_REASSERT_MS));
+    window.addEventListener('pagehide', this.stop, { once: true });
   }
+
+  stop = (): void => {
+    this.observer?.disconnect(); this.observer = null;
+    for (const timer of this.timers) window.clearInterval(timer);
+    this.timers = [];
+    if (this.scanTimer != null) window.clearTimeout(this.scanTimer);
+    if (this.applyTimer != null) window.clearTimeout(this.applyTimer);
+    this.stopBufferWatchdog();
+    this.detach();
+    this.sendPresence(false);
+    if (this.gestureRetry) {
+      document.removeEventListener('pointerdown', this.gestureRetry, true);
+      document.removeEventListener('keydown', this.gestureRetry, true);
+    }
+    window.removeEventListener('pagehide', this.stop);
+  };
 
   /** Сообщить background, есть ли в этом фрейме видео. Пуш при смене состояния или
    *  впервые; ре-репорт `true` идёт периодически (идемпотентно для агрегатора). */
@@ -100,8 +133,17 @@ export class PlayerController {
     const adapter = findAdapter(location.hostname, document);
     const adNow = adapter?.isAd?.(document) ?? false;
     if (adNow === this.isAdActive) return;
+    if (adNow && this.isBuffering) this.setBuffering(false);
     this.isAdActive = adNow;
     if (adNow) this.cancelNudge(); // началась своя реклама — подстройку скоростью снимаем
+    if (!adNow) {
+      if (this.pendingApply) {
+        const p = this.pendingApply; this.pendingApply = null;
+        this.applyRemote(p.action, p.currentTime, p.paused, p.rate, p.pauseOnly);
+      }
+      this.applyHold();
+      this.readySent = false; this.onReady();
+    }
     const msg: AdMsg = { kind: 'ad', ad: adNow };
     browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
   }
@@ -109,8 +151,13 @@ export class PlayerController {
   /** Найти и при необходимости переподключиться к активному <video>. */
   private scan(): void {
     const candidate = this.pickActiveVideo();
+    this.scanDirty = false;
     if (candidate && candidate !== this.video) {
       this.attach(candidate);
+    }
+    if (!candidate && this.video) {
+      if (this.isBuffering) this.setBuffering(false);
+      this.detach();
     }
     // Присутствие видео для гейтинга островка. Подмена <video> всегда даёт непустого
     // кандидата → не мигаем; `false` уходит только когда видео реально нет во фрейме.
@@ -135,10 +182,15 @@ export class PlayerController {
    *  Если применить не удалось (у нас нет такой озвучки/серии — наборы различаются) — сообщаем
    *  хабу наш РЕАЛЬНЫЙ выбор, чтобы он снял луп-гард и починил baseline (не откатывая комнату). */
   applyMediaSelection(sig: string): void {
+    this.readySent = false;
+    this.pendingApply = null;
     const adapter = findAdapter(location.hostname, document);
-    if (!adapter?.applySelection) return;
+    if (!adapter?.applySelection) {
+      browser.runtime.sendMessage({ kind: 'media-apply-failed', actualSig: null }).catch(() => {});
+      return;
+    }
     adapter.applySelection(sig, document, (ok) => {
-      if (ok) return;
+      if (ok) { this.checkMediaSig(); this.onReady(); return; }
       const actualSig = adapter.getSelection?.(document)?.sig ?? null;
       const msg: MediaApplyFailedMsg = { kind: 'media-apply-failed', actualSig };
       browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
@@ -146,6 +198,7 @@ export class PlayerController {
   }
 
   private pickActiveVideo(): HTMLVideoElement | null {
+    if (!this.scanDirty && (!this.video || this.video.isConnected)) return this.video;
     // 0) Сайт-специфичный оверрайд, если для хоста/DOM есть адаптер.
     const adapter = findAdapter(location.hostname, document);
     if (adapter) {
@@ -176,6 +229,8 @@ export class PlayerController {
     if (this.isBuffering) this.setBuffering(false);
     this.detach();
     this.video = video;
+    this.desiredPaused ??= video.paused;
+    this.updatePresence(true);
     this.readySent = false; // новый элемент — video-ready отправим заново
     this.driftStrikes = 0;  // новый плеер — счётчик дрейфа с нуля
     video.addEventListener('play', this.onPlay);
@@ -187,6 +242,8 @@ export class PlayerController {
     video.addEventListener('playing', this.onPlaying);
     // Cold-start (Фаза 1): дождаться метаданных, чтобы доиграть отложенную команду и
     // сообщить хабу о готовности. Если элемент уже готов — дёргаем onReady сразу.
+    video.addEventListener('loadstart', this.onLoadStart);
+    video.addEventListener('emptied', this.onLoadStart);
     video.addEventListener('loadedmetadata', this.onReady);
     video.addEventListener('canplay', this.onReady);
     video.addEventListener('durationchange', this.onReady);
@@ -203,6 +260,8 @@ export class PlayerController {
     this.video.removeEventListener('waiting', this.onWaiting);
     this.video.removeEventListener('stalled', this.onWaiting);
     this.video.removeEventListener('playing', this.onPlaying);
+    this.video.removeEventListener('loadstart', this.onLoadStart);
+    this.video.removeEventListener('emptied', this.onLoadStart);
     this.video.removeEventListener('loadedmetadata', this.onReady);
     this.video.removeEventListener('canplay', this.onReady);
     this.video.removeEventListener('durationchange', this.onReady);
@@ -211,9 +270,16 @@ export class PlayerController {
 
   /** <video> доиграл метаданные: раз на элемент шлём video-ready хабу и доигрываем
    *  отложенную команду (если была). Гейт по readyState/duration — против ложных срабатываний. */
+  private onLoadStart = () => {
+    this.readySent = false;
+    this.driftStrikes = 0;
+    this.cancelNudge();
+    if (this.isBuffering) this.setBuffering(false);
+  };
+
   private onReady = () => {
     const v = this.video;
-    if (!v || v.readyState < 1 || !Number.isFinite(v.duration)) return;
+    if (!v || this.isAdActive || v.readyState < 1 || !Number.isFinite(v.duration)) return;
     if (!this.readySent) {
       this.readySent = true;
       const msg: VideoReadyMsg = { kind: 'video-ready' };
@@ -222,7 +288,7 @@ export class PlayerController {
     if (this.pendingApply) {
       const p = this.pendingApply;
       this.pendingApply = null;
-      this.applyRemote(p.action, p.currentTime, p.paused, p.rate);
+      this.applyRemote(p.action, p.currentTime, p.paused, p.rate, p.pauseOnly);
     }
   };
 
@@ -242,8 +308,16 @@ export class PlayerController {
 
   // last-writer-wins: локальные play/pause просто транслируем, удалённые — применяем.
   // Гейт isApplyingRemote гасит эхо (наши же программные play/pause/seek не транслируем).
-  private onPlay = () => { if (!this.isApplyingRemote) this.emit('play'); };
-  private onPause = () => { this.cancelNudge(); if (!this.isApplyingRemote) this.emit('pause'); };
+  private onPlay = () => {
+    if (this.isApplyingRemote || this.isAdActive) return;
+    this.desiredPaused = false;
+    this.emit('play');
+    if (this.heldByPeer()) this.applyHold();
+  };
+  private onPause = () => {
+    this.cancelNudge();
+    if (!this.isApplyingRemote && !this.isAdActive) { this.desiredPaused = true; this.emit('pause'); }
+  };
   private onSeeked = () => { this.cancelNudge(); this.emit('seek'); };
   // ratechange от нашего же нуджа/возврата НЕ транслируем (эхо-детект по lastSetRate).
   // Если скорость поменял кто-то ещё (юзер/сеть) во время нуджа — бросаем нудж и транслируем.
@@ -275,10 +349,10 @@ export class PlayerController {
   snapshot(): PlayerSnapshot {
     const v = this.video;
     return {
-      paused: v?.paused ?? true,
+      paused: this.desiredPaused ?? v?.paused ?? true,
       currentTime: v?.currentTime ?? 0,
-      rate: v?.playbackRate ?? 1,
-      ready: !!v && v.readyState >= 1 && Number.isFinite(v.duration),
+      rate: this.nudger.isActive ? this.nudger.originalRate : v?.playbackRate ?? 1,
+      ready: !!v && !this.isAdActive && v.readyState >= 1 && Number.isFinite(v.duration),
     };
   }
 
@@ -324,10 +398,14 @@ export class PlayerController {
   private checkBufferRecovered(): void {
     if (!this.isBuffering) { this.stopBufferWatchdog(); return; }
     const v = this.video;
-    if (!v || v.paused || v.ended) { this.setBuffering(false); return; } // паузу синкнет своё событие
+    if (!v || v.ended || (v.paused && this.desiredPaused === true)) { this.setBuffering(false); return; } // паузу синкнет своё событие
     const advanced = v.currentTime > this.bufferStartTime + 0.1;
-    if (v.readyState >= 3 && advanced) { this.setBuffering(false); return; } // реально проигрывается снова
-    if (Date.now() - this.bufferStartedAt > MAX_BUFFER_HOLD_MS) this.setBuffering(false); // страховка
+    if (v.readyState >= 3 && (advanced || v.paused && this.heldByPeer())) { this.setBuffering(false); return; } // реально проигрывается снова
+    if (Date.now() - this.bufferStartedAt > MAX_BUFFER_HOLD_MS) {
+      this.desiredPaused = true; this.setBuffering(false);
+      this.isApplyingRemote = false; v.pause(); this.emit('pause');
+      browser.runtime.sendMessage({ kind: 'notice', text: 'Видео долго не загружается — просмотр приостановлен. Нажмите ▶ после загрузки.' }).catch(() => {});
+    } // страховка
   }
 
   private emitBuffering(buffering: boolean): void {
@@ -338,13 +416,16 @@ export class PlayerController {
 
   /** Применить удалённую команду (last-writer-wins), не порождая эхо (флаг isApplyingRemote).
    *  Технический холд буфера/рекламы партнёра имеет приоритет — сквозь него не играем. */
-  applyRemote(action: PlayerAction, currentTime: number, paused: boolean, rate?: number): void {
+  applyRemote(action: PlayerAction, currentTime: number, paused: boolean, rate?: number, pauseOnly = false): void {
+    if (!Number.isFinite(currentTime) || currentTime < 0 || (rate !== undefined && (!Number.isFinite(rate) || rate < 0.25 || rate > 4))) return;
+    this.desiredPaused = paused;
+    if (this.isAdActive) { this.pendingApply = { action, currentTime, paused, rate, pauseOnly }; return; }
     if (!this.video) this.scan();
     const v = this.video;
     // Cold-start (Фаза 1): плеер ещё не готов (нет <video>/метаданных) — не дропаем
     // команду, а откладываем; onReady доиграет её, когда балансер создаст и дозагрузит видео.
     if (shouldDeferApply({ hasVideo: !!v, readyState: v?.readyState ?? 0, durationFinite: v ? Number.isFinite(v.duration) : false })) {
-      this.pendingApply = { action, currentTime, rate, paused };
+      this.pendingApply = { action, currentTime, rate, paused, pauseOnly };
       return;
     }
     if (!v) return;
@@ -352,13 +433,14 @@ export class PlayerController {
     this.isApplyingRemote = true;
     try {
       // Позицию выставляем для play/pause/seek (rate её не несёт).
-      if (action !== 'rate' && Math.abs(v.currentTime - currentTime) > SEEK_EPSILON) {
+      if (!pauseOnly && action !== 'rate' && Math.abs(v.currentTime - currentTime) > SEEK_EPSILON) {
         v.currentTime = currentTime;
       }
-      if (action === 'rate' && rate) v.playbackRate = rate;
+      this.nudger.abandon();
+      if (!pauseOnly && rate !== undefined) v.playbackRate = rate;
       // Воспроизведение: последнее слово за отправителем, но не играем сквозь холд.
-      if (action === 'play' && !this.heldByPeer()) this.tryPlay(v);
-      else if (action === 'pause') v.pause();
+      if (!paused && !this.heldByPeer()) this.tryPlay(v);
+      else v.pause();
     } finally {
       this.releaseSoon();
     }
@@ -367,7 +449,7 @@ export class PlayerController {
   /** Попытка воспроизведения с обработкой отказа автоплея (Фаза 1). Голый catch
    *  раньше глотал отказ → позиция вставала, но play молча не срабатывал. */
   private tryPlay(v: HTMLVideoElement): void {
-    void v.play().catch(() => this.onAutoplayBlocked());
+    void v.play().catch((e: DOMException) => { if (e.name === 'NotAllowedError' && !this.desiredPaused) this.onAutoplayBlocked(); });
   }
 
   /** Автоплей заблокирован политикой браузера: тост + разовые слушатели жеста
@@ -384,23 +466,25 @@ export class PlayerController {
       document.removeEventListener('pointerdown', retry, true);
       document.removeEventListener('keydown', retry, true);
       this.awaitingGesture = false;
+      this.gestureRetry = null;
       const v = this.video;
-      if (v && v.paused && !this.heldByPeer()) void v.play().catch(() => { /* всё ещё нельзя */ });
+      if (v && v.paused && !this.desiredPaused && !this.heldByPeer()) void v.play().catch(() => { /* всё ещё нельзя */ });
     };
+    this.gestureRetry = retry;
     document.addEventListener('pointerdown', retry, { once: true, capture: true });
     document.addEventListener('keydown', retry, { once: true, capture: true });
   }
 
   /** Партнёр буферизуется — встаём; возобновился — играем (если нет других холдов) (Фаза 2). */
   applyBufferControl(buffering: boolean): void {
-    if (!this.video || this.isAdActive) return; // во время своей рекламы паузу не трогаем
+    this.desiredPaused ??= this.video?.paused ?? true;
     this.pausedByPeerBuffer = buffering;
     this.applyHold();
   }
 
   /** Партнёр в рекламе — встаём; закончилась — играем (если нет других холдов) (Фаза 3). */
   applyAdControl(ad: boolean): void {
-    if (!this.video || this.isAdActive) return; // своя реклама — наш <video> её и показывает
+    this.desiredPaused ??= this.video?.paused ?? true;
     this.pausedByPeerAd = ad;
     this.applyHold();
   }
@@ -408,9 +492,9 @@ export class PlayerController {
   /** Применить технический холд буфера/рекламы: пауза пока холд активен, иначе — возобновить. */
   private applyHold(): void {
     const v = this.video;
-    if (!v) return;
-    const held = this.heldByPeer();
-    if (held === !v.paused) return; // уже в нужном состоянии
+    if (!v || this.isAdActive) return;
+    const held = this.heldByPeer() || (this.desiredPaused ?? v.paused);
+    if (held === v.paused) return; // уже в нужном состоянии
     this.isApplyingRemote = true;
     try {
       if (held) v.pause();

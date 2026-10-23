@@ -18,7 +18,7 @@ export const BACKOFF_CAP = 30000; // мс — потолок задержки
 export const BACKOFF_JITTER = 1000; // мс — верхняя граница случайной добавки
 
 // Dead-socket watchdog (Фаза A): если соединение «молчит» дольше — форсируем реконнект.
-export const WATCHDOG_SILENCE_MS = 45000;
+export const WATCHDOG_SILENCE_MS = 180000;
 
 // Авто-дисконнект по простою: если нет НИКАКОЙ реальной активности просмотра (beat при
 // воспроизведении, событие плеера, входящий STATE/BEAT) дольше этого — сокет закрывается
@@ -56,6 +56,18 @@ export interface Session {
   ws: WebSocket | null;
   connected: boolean;
   room: string;
+  updateVersion: string;
+  serverUrl: string;
+  navigationOrigin: string;
+  pendingPageUrl: string;
+  pendingPageAt: number;
+  phase: 'disconnected' | 'connecting' | 'joined' | 'retrying' | 'error' | 'idle';
+  error: string;
+  revision: number;
+  contentMismatch: boolean;
+  mismatchSig: string | null;
+  connectGeneration: number;
+  openTimer: ReturnType<typeof setTimeout> | null;
   /** Наш connId (из ROSTER.self). -1 = ещё не в комнате. */
   myConnId: number;
   /** Весь roster: connId → участник (себя включая). */
@@ -125,6 +137,7 @@ export interface Session {
    *  переживает ремаунт островка и перезагрузку вкладки; teardownSocket его НЕ чистит
    *  (реконнект сохраняет), а ручной disconnect уничтожает Session → лог обнуляется сам. */
   chatLog: ChatEntry[];
+  chatDraft: string;
   /** Метка последнего ОТПРАВЛЕННОГО нами быстрого сообщения — антиспам-кулдаун. */
   lastChatSentAt: number;
 }
@@ -142,7 +155,7 @@ export function createSession(tabId: number): Session {
     tabId,
     ws: null,
     connected: false,
-    room: '',
+    room: '', updateVersion: '', serverUrl: '', navigationOrigin: '', pendingPageUrl: '', pendingPageAt: 0, phase: 'disconnected', error: '', revision: -1, contentMismatch: false, mismatchSig: null, connectGeneration: 0, openTimer: null,
     myConnId: -1,
     roster: new Map(),
     blocks: new Map(),
@@ -173,6 +186,7 @@ export function createSession(tabId: number): Session {
     expectedSigAt: 0,
     lastSigSentAt: 0,
     chatLog: [],
+    chatDraft: '',
     lastChatSentAt: 0,
   };
 }

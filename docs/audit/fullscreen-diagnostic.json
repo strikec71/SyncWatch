@@ -1,0 +1,207 @@
+[
+  {
+    "id": "banner visible before fullscreen",
+    "observed": {
+      "open": true,
+      "above": true,
+      "fullscreen": false,
+      "rect": {
+        "x": 555.046875,
+        "y": 112,
+        "width": 169.90625,
+        "height": 41
+      },
+      "hit": "DIV",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "inert": false
+    },
+    "pass": true
+  },
+  {
+    "id": "container: existing banner remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true,
+      "rect": {
+        "x": 555.046875,
+        "y": 112,
+        "width": 169.90625,
+        "height": 41
+      },
+      "hit": "DIV",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "inert": false
+    },
+    "pass": false
+  },
+  {
+    "id": "container: control panel remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true,
+      "rect": {
+        "x": 1014,
+        "y": 16,
+        "width": 250,
+        "height": 342
+      },
+      "hit": "DIV",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "inert": false
+    },
+    "pass": false
+  },
+  {
+    "id": "container: incoming toast visible",
+    "observed": {
+      "text": "Message received in fullscreen",
+      "above": false
+    },
+    "pass": false
+  },
+  {
+    "id": "video: existing banner remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true,
+      "rect": {
+        "x": 555.046875,
+        "y": 112,
+        "width": 169.90625,
+        "height": 41
+      },
+      "hit": "VIDEO",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "inert": false
+    },
+    "pass": false
+  },
+  {
+    "id": "video: control panel remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true,
+      "rect": {
+        "x": 1014,
+        "y": 16,
+        "width": 250,
+        "height": 378.84375
+      },
+      "hit": "VIDEO",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "inert": false
+    },
+    "pass": false
+  },
+  {
+    "id": "video: incoming toast visible",
+    "observed": {
+      "text": "Message received in fullscreen",
+      "above": false
+    },
+    "pass": false
+  },
+  {
+    "id": "iframe: existing banner remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true,
+      "rect": {
+        "x": 555.046875,
+        "y": 112,
+        "width": 169.90625,
+        "height": 41
+      },
+      "hit": "IFRAME",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "inert": false
+    },
+    "pass": false
+  },
+  {
+    "id": "iframe: control panel remains above fullscreen",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true,
+      "rect": {
+        "x": 1014,
+        "y": 16,
+        "width": 250,
+        "height": 413.6875
+      },
+      "hit": "IFRAME",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "inert": false
+    },
+    "pass": false
+  },
+  {
+    "id": "iframe: incoming toast visible",
+    "observed": {
+      "text": "Message received in fullscreen",
+      "above": false
+    },
+    "pass": false
+  },
+  {
+    "id": "site popover does not cover existing banner",
+    "observed": {
+      "open": true,
+      "above": false,
+      "fullscreen": true,
+      "rect": {
+        "x": 555.046875,
+        "y": 112,
+        "width": 169.90625,
+        "height": 41
+      },
+      "hit": "VIDEO",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "inert": false
+    },
+    "pass": false
+  },
+  {
+    "id": "restacking preserves focused input and text",
+    "observed": {
+      "focused": false,
+      "value": "typing-in-fullscreen"
+    },
+    "pass": false
+  },
+  {
+    "id": "UI cleanup removes all floating hosts",
+    "observed": 0,
+    "pass": true
+  }
+]

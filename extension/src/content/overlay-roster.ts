@@ -9,21 +9,11 @@
 import type { StatusSnapshot } from '../shared/messages';
 import type { RosterPeer } from '../shared/protocol';
 
-// Латиница намеренно (безопасно в URL-хэше и в room-path сервера), список маленький и «мягкий».
-const WORDS = [
-  'luna', 'nova', 'echo', 'orbit', 'pixel', 'tiger', 'mango', 'river', 'cloud', 'ember',
-  'delta', 'koala', 'vibe', 'sonic', 'lumen', 'flint', 'zebra', 'comet', 'mocha', 'pluto',
-  'raven', 'onyx', 'kiwi', 'frost',
-];
-
 /** Дружелюбный код комнаты: `слово-слово-NN` (нижний регистр). `rnd` инъектируется для тестов. */
-export function friendlyCode(rnd: () => number = Math.random): string {
-  const pick = (): string => WORDS[Math.floor(rnd() * WORDS.length) % WORDS.length];
-  const a = pick();
-  let b = pick();
-  if (b === a) b = WORDS[(WORDS.indexOf(a) + 1) % WORDS.length]; // не «luna-luna»
-  const nn = String(Math.floor(rnd() * 100) % 100).padStart(2, '0');
-  return `${a}-${b}-${nn}`;
+export function friendlyCode(): string {
+  // 128 unpredictable bits; the code is the access secret, not a public label.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return 'watch-' + [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 /** Решение по одной строке roster. Чистое — юнит-тест без DOM. */

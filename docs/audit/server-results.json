@@ -1,0 +1,85 @@
+[
+  {
+    "id": "SERVER three-person roster",
+    "observed": 3,
+    "expected": 3,
+    "pass": true
+  },
+  {
+    "id": "SERVER guest seek is rejected",
+    "observed": 0,
+    "expected": 0,
+    "pass": true
+  },
+  {
+    "id": "AUD-10 pause smuggles seek",
+    "observed": {
+      "type": "STATE",
+      "action": "pause",
+      "currentTime": 100,
+      "paused": true,
+      "ts": 1,
+      "from": 2
+    },
+    "expected": "pause must not change position",
+    "pass": false
+  },
+  {
+    "id": "SERVER sender identity overwritten",
+    "observed": 2,
+    "expected": 2,
+    "pass": true
+  },
+  {
+    "id": "AUD-11 oversized name relayed",
+    "observed": 100000,
+    "expected": "<=128",
+    "pass": false
+  },
+  {
+    "id": "SERVER eleventh participant rejected",
+    "observed": 3,
+    "expected": 3,
+    "pass": true
+  },
+  {
+    "id": "AUD-11 socket without JOIN becomes host",
+    "observed": {
+      "type": "ROSTER",
+      "self": 2,
+      "peers": [
+        {
+          "id": 1,
+          "name": "",
+          "isHost": true,
+          "hasControl": false,
+          "detached": false
+        },
+        {
+          "id": 2,
+          "name": "Actual first join",
+          "isHost": false,
+          "hasControl": false,
+          "detached": false
+        }
+      ]
+    },
+    "expected": "host must have joined",
+    "pass": false
+  },
+  {
+    "id": "RELEASE latest-version endpoint",
+    "observed": {
+      "version": "0.2.0",
+      "notes": ""
+    },
+    "expected": "compare with extension 0.6.0; publication state unknown",
+    "pass": null
+  },
+  {
+    "id": "AUD-13 bare named room invitation",
+    "observed": false,
+    "expected": "HTML only; client path handling assessed separately",
+    "pass": null
+  }
+]

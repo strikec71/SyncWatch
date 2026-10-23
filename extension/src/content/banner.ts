@@ -1,9 +1,10 @@
-// Центральный статус-баннер (Фаза 7) — только верхний фрейм.
+// Центральный статус-баннер (Фаза 7) — документ показа, выбранный ContentUI.
 // Дышащая плашка по центру, отражающая текущее блокирующее состояние от партнёра
 // (пауза / буфер / реклама со счётом вверх). Состояние считает background и пушит
 // сюда; текст и таймер рекламы баннер крутит локально. Виден поверх фуллскрина
 // (popover/top-layer, как островок). Ленивый DOM: нет состояния — нет элемента.
 
+import { showFloatingLayer, hideFloatingLayer, removeFloatingLayer } from './floating-layer';
 import type { BannerMsg } from '../shared/messages';
 
 type BannerState = BannerMsg['state'];
@@ -69,7 +70,7 @@ export class StatusBanner {
       'position:fixed;inset:auto;margin:0;border:0;padding:0;background:transparent;' +
       'left:50%;top:14%;transform:translateX(-50%);z-index:2147483646;' +
       'max-width:none;max-height:none;overflow:visible;pointer-events:none;';
-    const shadow = host.attachShadow({ mode: 'open' });
+    const shadow = host.attachShadow({ mode: 'closed' });
     shadow.innerHTML = BANNER_TEMPLATE;
     document.documentElement.appendChild(host);
     this.host = host;
@@ -79,19 +80,17 @@ export class StatusBanner {
   }
 
   private showInTopLayer(): void {
-    const host = this.host as (HTMLElement & { showPopover?: () => void }) | null;
-    if (!host || typeof host.showPopover !== 'function') return;
-    try { host.showPopover(); } catch { /* уже показан */ }
+    if (this.host) showFloatingLayer(this.host, 10);
   }
 
   private hide(): void {
     this.stopTick();
-    const host = this.host as (HTMLElement & { hidePopover?: () => void }) | null;
-    if (host) { try { host.hidePopover?.(); } catch { /* не показан */ } host.style.display = 'none'; }
+    if (this.host) { hideFloatingLayer(this.host); this.host.style.display = 'none'; }
   }
 
   destroy(): void {
     this.stopTick();
+    if (this.host) removeFloatingLayer(this.host);
     this.host?.remove();
     this.host = null;
   }

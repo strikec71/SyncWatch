@@ -7,9 +7,10 @@
 //
 // События: всплывающие ТОСТЫ (видны в любом состоянии, гаснут ~3.5с). Статус опрашиваем
 // сами (poll) И принимаем push `status` от хаба; roster/контроль/обновления — push через
-// tabs.sendMessage(frame 0) → ловим runtime.onMessage.
+// tabs.sendMessage (все фреймы вкладки) → ловим runtime.onMessage.
 
 import browser from '../shared/browser';
+import { showFloatingLayer, removeFloatingLayer } from './floating-layer';
 import { loadSettings, saveSettings, ensureDeviceName, type Settings } from '../shared/settings';
 import type { StatusSnapshot, RuntimeMessage } from '../shared/messages';
 import { friendlyCode, decideRowControls, detachButton, buildRosterRow, peersLabel } from './overlay-roster';
@@ -28,16 +29,15 @@ export class Overlay {
   private pollTimer: number | null = null;
   private onMsg: ((msg: RuntimeMessage) => void) | null = null;
   private onStorage: Parameters<typeof browser.storage.onChanged.addListener>[0] | null = null;
-  private onFsChange: (() => void) | null = null;
   private chat: OverlayChat | null = null;         // чат-поверхность (кнопка 💬 + колесо + лог)
   private friends: FriendsPanel | null = null;     // раздел «Друзья» (presence, приглашения)
   private videoAvailable = false;                  // есть ли видео на вкладке (подсказка компактного режима)
   private userExpandedCompact = false;             // пользователь развернул пилюлю вручную (тап по шапке)
+
   private myName = '';
   private last: StatusSnapshot | null = null;      // последний снимок (для кнопок)
   private requesting = new Set<number>();          // connId'ы гостей с висящим запросом контроля
-  private wantConnected = false;                   // намерение быть в комнате (для восстановления после выгрузки SW)
-  private lastConnectSentAt = 0;                   // антидребезг переотправки connect
+  private mounted = false;
 
   private $(id: string): HTMLElement { return this.shadow!.getElementById(id)!; }
   private input(id: string): HTMLInputElement { return this.$(id) as HTMLInputElement; }
@@ -49,18 +49,21 @@ export class Overlay {
     // popover → элемент в «top layer»: рендерится поверх любого фуллскрина (включая
     // кросс-доменный iframe плеера). Нейтрализуем дефолтные UA-стили попавера.
     host.setAttribute('popover', 'manual');
+    host.dataset.syncwatchUi = '';
+    this.mounted = true;
     // ВАЖНО: inset:auto идёт ДО top/right — иначе шорткат inset затирает офсеты (уезжает в угол).
     host.style.cssText =
       'position:fixed;inset:auto;margin:0;border:0;padding:0;background:transparent;' +
       'top:16px;right:16px;z-index:2147483647;pointer-events:auto;' +
       'max-width:none;max-height:none;overflow:visible;';
-    this.shadow = host.attachShadow({ mode: 'open' });
+    this.shadow = host.attachShadow({ mode: 'closed' });
     this.shadow.innerHTML = TEMPLATE;
     this.host = host;
 
     // Заполнить настройки.
     const s = await loadSettings();
     this.myName = await ensureDeviceName();
+    if (!this.mounted || this.host !== host) return;
     this.input('room').value = s.room;
     this.input('serverUrl').value = s.serverUrl;
     this.input('drift').value = String(s.driftThreshold);
@@ -71,13 +74,11 @@ export class Overlay {
     this.$('c').addEventListener('click', async () => {
       const room = this.input('room').value.trim();
       if (!room) { this.hint('Сначала задайте код комнаты'); return; }
-      await this.persistForConnect();
-      this.wantConnected = true;
+      try { await this.persistForConnect(); } catch (e) { this.hint(String(e)); return; }
       this.sendConnect();
       window.setTimeout(() => void this.refresh(), 300);
     });
     this.$('d').addEventListener('click', () => {
-      this.wantConnected = false;
       void browser.runtime.sendMessage({ kind: 'disconnect' }).catch(() => {});
       window.setTimeout(() => void this.refresh(), 300);
     });
@@ -90,7 +91,7 @@ export class Overlay {
       if (!this.input('serverUrl').value.trim()) {
         this.hint(`Комната «${code}» создана — укажите адрес сервера в «Настройках»`);
       } else {
-        this.hint(`Комната «${code}» создана`);
+        this.hint('Код сгенерирован. Нажмите «Войти», затем «Позвать»');
       }
     });
 
@@ -104,7 +105,7 @@ export class Overlay {
     });
 
     for (const id of ['room', 'serverUrl', 'drift', 'dev', 'auto', 'share-presence']) {
-      this.$(id).addEventListener('change', () => void this.persistField(id));
+      this.$(id).addEventListener('change', () => { void this.persistField(id).catch(e => this.hint(String(e))); });
     }
 
     // Настройки глобальны на все вкладки: если их поменял другой островок / инвайт-ссылка,
@@ -114,8 +115,7 @@ export class Overlay {
       if (area !== 'local' || !changes.settings) return;
       const next = changes.settings.newValue as Partial<Settings> | undefined;
       if (!next) return;
-      this.syncField('room', next.room);
-      this.syncField('serverUrl', next.serverUrl);
+      // Room and server belong to this tab, never copy another tab's defaults here.
       this.syncField('drift', next.driftThreshold);
       this.syncField('auto', next.autoConnect);
       this.syncField('share-presence', next.sharePresence);
@@ -131,6 +131,7 @@ export class Overlay {
 
     // Чат-поверхность (кнопка 💬 в шапке + колесо + лог секции «Чат»). Лог подтягиваем
     // из сессии хаба (переживает ремаунт островка/перезагрузку вкладки).
+    (this.$('update') as HTMLAnchorElement).href = `https://chromewebstore.google.com/detail/${browser.runtime.id}`;
     this.chat = new OverlayChat(this.shadow, (t) => this.hint(t));
     this.chat.loadLog();
 
@@ -145,15 +146,9 @@ export class Overlay {
     document.documentElement.appendChild(host);
     this.showInTopLayer();
 
-    // При входе/выходе из фуллскрина пере-стекаем попавер ПОВЕРХ нового
-    // фуллскрин-элемента (иначе он окажется выше попавера и скроет островок).
-    this.onFsChange = () => this.showInTopLayer();
-    document.addEventListener('fullscreenchange', this.onFsChange);
-    document.addEventListener('webkitfullscreenchange', this.onFsChange);
-
     void this.refresh();
     this.recomputeCompact();
-    this.pollTimer = window.setInterval(() => { void this.refresh(); this.keepOnTop(); }, POLL_MS);
+    this.pollTimer = window.setInterval(() => { void this.refresh(); }, POLL_MS);
   }
 
   /** Подсказка из content/index.ts: есть ли на вкладке видео. Влияет только на компактную
@@ -182,7 +177,7 @@ export class Overlay {
     return true;
   }
 
-  /** Push от хаба (frame 0): статус, события, запрос контроля, доступное обновление. */
+  /** Push от хаба для вкладки: статус, события, запрос контроля, доступное обновление. */
   private onPush(msg: RuntimeMessage): void {
     switch (msg?.kind) {
       case 'event': this.toast(msg.text, false); break;
@@ -195,32 +190,19 @@ export class Overlay {
 
   /** Показать/пере-показать островок в top layer (popover). Грейсфул для старых браузеров. */
   private showInTopLayer(): void {
-    const host = this.host as (HTMLElement & { showPopover?: () => void; hidePopover?: () => void }) | null;
-    if (!host || typeof host.showPopover !== 'function') return;
-    try { host.hidePopover?.(); } catch { /* не был показан */ }
-    try { host.showPopover(); } catch { /* уже показан / не подключён */ }
-  }
-
-  /** Периодически возвращаем островок на самый верх top-layer: сайт мог открыть СВОЙ
-   *  popover/<dialog>/fullscreen ПОСЛЕ нас. Не дёргаем, если пользователь печатает. */
-  private keepOnTop(): void {
-    const ae = this.shadow?.activeElement;
-    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
-    this.showInTopLayer();
+    if (this.host) showFloatingLayer(this.host, 0, this.shadow);
   }
 
   /** Снять островок (когда overlayEnabled выключен тумблером на иконке). */
   unmount(): void {
     this.chat?.destroy(); this.chat = null;
     this.friends = null; // без глобальных слушателей/таймеров — уходит вместе с shadow
+    this.mounted = false;
+
     if (this.pollTimer) { window.clearInterval(this.pollTimer); this.pollTimer = null; }
     if (this.onMsg) { browser.runtime.onMessage.removeListener(this.onMsg); this.onMsg = null; }
     if (this.onStorage) { browser.storage.onChanged.removeListener(this.onStorage); this.onStorage = null; }
-    if (this.onFsChange) {
-      document.removeEventListener('fullscreenchange', this.onFsChange);
-      document.removeEventListener('webkitfullscreenchange', this.onFsChange);
-      this.onFsChange = null;
-    }
+    if (this.host) removeFloatingLayer(this.host);
     this.host?.remove();
     this.host = null;
     this.shadow = null;
@@ -275,10 +257,11 @@ export class Overlay {
    *  Сервер обязателен: без него у приглашённого с чистой установкой подключаться некуда
    *  (дефолтного публичного релея нет) — это был баг «ссылка не подключает». */
   private async copyInvite(): Promise<void> {
-    const room = this.input('room').value.trim();
+    const room = this.last?.room || this.input('room').value.trim();
     if (!room) { this.hint('Сначала задайте комнату'); return; }
-    const server = this.input('serverUrl').value.trim();
+    const server = this.last?.serverUrl || this.input('serverUrl').value.trim();
     if (!server) { this.hint('Укажите адрес сервера в «Настройках» — без него приглашение не сработает'); return; }
+
     const link =
       `${location.href.split('#')[0]}#syncwatch=${encodeURIComponent(room)}` +
       `&s=${encodeURIComponent(server)}`;
@@ -314,13 +297,11 @@ export class Overlay {
     const room = this.input('room').value.trim();
     if (!room) return;
     const serverUrl = this.input('serverUrl').value.trim() || undefined;
-    this.lastConnectSentAt = Date.now();
     void browser.runtime
       .sendMessage({ kind: 'connect', room, serverUrl })
       .then((r: unknown) => {
         const res = r as { ok?: boolean; error?: string } | undefined;
         if (res && res.ok === false && res.error) {
-          this.wantConnected = false; // не долбить авто-повтором заведомо неисправный connect
           this.hint(res.error);
         }
       })
@@ -332,31 +313,33 @@ export class Overlay {
       | StatusSnapshot
       | null;
     this.render(st);
-
-    // Восстановление после выгрузки SW: фон не помнит комнат, поэтому если мы ХОТИМ быть
-    // в комнате (жали «Подключиться», не «Отключиться»), а статус «не подключено» — переотправляем
-    // connect. Антидребезг: не чаще раза в 4с (пока соединение поднимается).
-    if (
-      this.wantConnected && !st?.connected &&
-      this.input('auto').checked &&
-      Date.now() - this.lastConnectSentAt > 4000
-    ) {
-      this.sendConnect();
-    }
   }
 
   private render(st: StatusSnapshot | null): void {
     if (!this.shadow) return;
     this.last = st;
     this.recomputeCompact(); // подключение/отключение меняет право на «пилюлю»
+    this.$('update').style.display = st?.updateVersion ? '' : 'none';
+    this.$('update').textContent = st?.updateVersion ? `Доступна версия ${st.updateVersion}` : '';
+
     const connected = !!st?.connected;
-    (this.$('c') as HTMLElement).style.display = connected ? 'none' : '';
-    (this.$('d') as HTMLElement).style.display = connected ? '' : 'none';
+    if (st?.room) this.syncField('room', st.room);
+    if (st?.serverUrl) this.syncField('serverUrl', st.serverUrl);
+    const active = connected || st?.phase === 'connecting' || st?.phase === 'retrying';
+    (this.$('c') as HTMLElement).style.display = active ? 'none' : '';
+    (this.$('d') as HTMLElement).style.display = active ? '' : 'none';
+    this.input('room').readOnly = active; this.input('serverUrl').readOnly = active;
+    (this.$('create') as HTMLButtonElement).disabled = active;
 
     let dot = 'off';
     let text = 'Не подключено';
     if (st?.connected && st.peerPresent) { dot = 'on'; text = `«${st.room}» · ${peersLabel(st.peers.length)}`; }
     else if (st?.connected) { dot = 'wait'; text = `«${st.room}» · ожидаем участников…`; }
+    if (st?.phase === 'connecting') text = 'Подключаемся…';
+    if (st?.phase === 'retrying') text = 'Связь потеряна — повторяем подключение…';
+    if (st?.error) text = st.error;
+    if (st?.contentMismatch) text = 'Контент не совпадает — выберите серию комнаты или включите соло';
+
     this.$('dot').setAttribute('data-state', dot);
     this.$('sync').setAttribute('data-state', dot);   // сигнатурная линия связи
     this.$('s').textContent = text;
@@ -452,8 +435,8 @@ export class Overlay {
     });
     handle.addEventListener('pointermove', (e) => {
       if (!dragging) return;
-      host.style.left = `${baseLeft + (e.clientX - startX)}px`;
-      host.style.top = `${baseTop + (e.clientY - startY)}px`;
+      host.style.left = `${Math.max(0, Math.min(window.innerWidth - host.offsetWidth, baseLeft + e.clientX - startX))}px`;
+      host.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, baseTop + e.clientY - startY))}px`;
     });
     handle.addEventListener('pointerup', (e) => {
       dragging = false;

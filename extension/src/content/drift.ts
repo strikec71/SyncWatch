@@ -30,6 +30,7 @@ export class DriftNudger {
   private lastSet = 0;    // последнее значение rate, выставленное нами (эхо-детект)
   private timer: number | null = null;
 
+  get originalRate(): number { return this.baseRate; }
   get isActive(): boolean { return this.active; }
   get lastSetRate(): number { return this.lastSet; }
 

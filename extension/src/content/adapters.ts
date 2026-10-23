@@ -268,6 +268,9 @@ const ALLOHA: SiteAdapter = {
   // Пиновать контент-video: универсальная эвристика во время преролла схватила бы РЕКЛАМНОЕ
   // видео rmp-vast (`.rmp-ad-container video`).
   pick: (doc) => doc.querySelector<HTMLVideoElement>('video#player'),
+  // Alloha uses a separate visible VAST video; an empty/hidden ad container is not an ad.
+  isAd: (doc) => [...doc.querySelectorAll<HTMLVideoElement>('.rmp-ad-container video')].some(v =>
+    !v.paused && !v.ended && v.readyState >= 2 && v.getClientRects().length > 0),
   getSelection: (doc) => {
     const sel = allohaRead(doc);
     const sig = allohaBuildSig(sel);

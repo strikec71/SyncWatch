@@ -9,7 +9,7 @@
 // Засыпание SW гасим WS keepalive (PING) по browser.alarms; аларм-тик итерирует все сессии.
 
 import browser from '../shared/browser';
-import { loadSettings, saveSettings } from '../shared/settings';
+import { loadSettings, saveSettings, updateSettings, useBackgroundSettings } from '../shared/settings';
 import type {
   RuntimeMessage,
   NoticeMsg,
@@ -32,12 +32,12 @@ import { connect, disconnect, cancelReconnect, checkWatchdog, checkIdle, reconne
 import { onPlayerEvent, onBuffering, onBeat, onAd, onVideoReady } from './sync';
 import { onNavReport, onMediaSig, onMediaApplyFailed, normalizeSyncUrl } from './nav';
 import { notifyEvent, notifyPopup, statusSnapshot } from './roster';
-import { onVideoPresence, queryVideoAvailable, forgetTab } from './presence';
-import { onSendQuickMessage } from './chat';
+import { onSendQuickMessage, onSendTextMessage } from './chat';
 import {
   PRESENCE_ALARM,
   tickPresence,
   beatPresence,
+  revokePresence,
   ensurePresenceAlarm,
   handleGetFriends,
   handleAddFriendLink,
@@ -47,6 +47,14 @@ import {
   handleJoinFriend,
   handleFriendRequestIncoming,
 } from './friends';
+import { persistSessions, restoreSessions } from './persistence';
+import { startNotifier } from './notifier';
+import { syncHolds } from './roster';
+import { framesWithVideo, resetTabFrames, onVideoPresence, queryVideoAvailable, forgetTab } from './presence';
+
+useBackgroundSettings();
+startNotifier();
+
 
 /** Снимок «вкладка не в комнате» — для get-status от ещё не подключённой вкладки. */
 function emptySnapshot(): StatusSnapshot {
@@ -56,13 +64,19 @@ function emptySnapshot(): StatusSnapshot {
   };
 }
 
-browser.runtime.onMessage.addListener(
+const handleMessage: Parameters<typeof browser.runtime.onMessage.addListener>[0] =
   (msg: RuntimeMessage, sender, sendResponse) => {
     if (!msg || typeof msg !== 'object') return;
     const tabId = sender.tab?.id;
     const frameId = sender.frameId ?? 0;
 
     switch (msg.kind) {
+      case 'open-overlay':
+        if (tabId != null) void browser.tabs.sendMessage(tabId, { kind: 'show-overlay' }, { frameId: 0 }).catch(() => {});
+        sendResponse({ ok: true }); return;
+      case 'save-settings':
+        updateSettings(msg.patch).then(settings => sendResponse({ settings })).catch(e => sendResponse({ error: String(e) }));
+        return true;
       case 'connect': {
         if (tabId == null) { sendResponse({ ok: false, error: 'no tab' }); return; }
         const s = getSession(tabId);
@@ -144,7 +158,13 @@ browser.runtime.onMessage.addListener(
       case 'video-presence':
         // Любой фрейм сообщает, есть ли в нём <video>. Хаб агрегирует по вкладке и
         // пушит доступность в островок (frame 0) — чтобы он не всплывал на страницах без видео.
-        if (tabId != null) onVideoPresence(tabId, frameId, msg.present);
+        if (tabId != null) {
+          const first = framesWithVideo(tabId).length === 0;
+          onVideoPresence(tabId, frameId, msg.present);
+          const s = peekSession(tabId);
+          if (msg.present && s && (first || !framesWithVideo(tabId).includes(s.frameId))) { onVideoReady(s, frameId); syncHolds(s); }
+          if (msg.present && s?.pendingPageUrl) onNavReport(s, s.pendingPageUrl);
+        }
         return;
       case 'query-video':
         // Верхний фрейм при загрузке спрашивает: есть ли уже видео в этой вкладке
@@ -152,12 +172,19 @@ browser.runtime.onMessage.addListener(
         sendResponse({ available: tabId != null && queryVideoAvailable(tabId) });
         return;
       case 'send-quick-message':
-        // островок → отправить быстрое сообщение (чат). peekSession: без сессии слать некуда.
-        if (tabId != null) { const s = peekSession(tabId); if (s) onSendQuickMessage(s, msg.code); }
+      case 'send-text-message': {
+        const s = tabId != null ? peekSession(tabId) : null;
+        sendResponse(s ? (msg.kind === 'send-quick-message' ? onSendQuickMessage(s, msg.code) : onSendTextMessage(s, msg.text)) : { ok: false, error: 'Подключитесь к комнате' });
         return;
+      }
+      case 'set-chat-draft': {
+        const s = tabId != null ? peekSession(tabId) : null;
+        if (s && typeof msg.text === 'string' && msg.text.length <= 200) s.chatDraft = msg.text;
+        sendResponse({ok:true}); return;
+      }
       case 'get-chat-log':
         // островок при маунте подтягивает лог чата сессии (переживает ремаунт/перезагрузку).
-        sendResponse({ entries: tabId != null ? (peekSession(tabId)?.chatLog ?? []) : [] });
+        sendResponse({ entries: tabId != null ? (peekSession(tabId)?.chatLog ?? []) : [], draft: tabId != null ? (peekSession(tabId)?.chatDraft ?? '') : '' });
         return;
       case 'get-friends':
         // Друзья — глобальные данные (не per-tab): отвечаем сразу, свежесть добьёт tick.
@@ -167,29 +194,34 @@ browser.runtime.onMessage.addListener(
         void handleAddFriendLink(sendResponse);
         return true;
       case 'accept-friend':
-        void handleAcceptFriend(msg.id);
-        sendResponse({ ok: true });
-        return;
       case 'decline-friend':
-        void handleDeclineFriend(msg.id);
-        sendResponse({ ok: true });
-        return;
       case 'remove-friend':
-        void handleRemoveFriend(msg.id);
-        sendResponse({ ok: true });
-        return;
       case 'join-friend':
-        void handleJoinFriend(msg.id);
-        sendResponse({ ok: true });
-        return;
-      case 'friend-request-incoming':
-        // content (верхний фрейм) поймал ссылку-приглашение в друзья → в инбокс, ждём «Принять».
-        void handleFriendRequestIncoming(msg);
-        sendResponse({ ok: true });
-        return;
+      case 'friend-request-incoming': {
+        if (tabId == null || (msg.kind === 'friend-request-incoming' && frameId !== 0)) { sendResponse({ ok: false, error: 'Недоступно в этом фрейме' }); return; }
+        const action = msg.kind === 'accept-friend' ? handleAcceptFriend(msg.id)
+          : msg.kind === 'decline-friend' ? handleDeclineFriend(msg.id)
+          : msg.kind === 'remove-friend' ? handleRemoveFriend(msg.id)
+          : msg.kind === 'join-friend' ? handleJoinFriend(msg.id) : handleFriendRequestIncoming(msg);
+        action.then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+        return true;
+      }
     }
-  },
-);
+  };
+
+let initialized = false;
+const restored = restoreSessions().catch(() => {}).then(async () => {
+  initialized = true;
+  for (const s of allSessions()) if (s.autoConnect && !s.idleClosed) void connect(s, s.room, s.serverUrl);
+});
+browser.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (!initialized) { void restored.then(() => handleMessage(msg, sender, reply)); return true; }
+  return handleMessage(msg, sender, reply);
+});
+
+browser.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === 'loading') { resetTabFrames(tabId); const s = peekSession(tabId); if (s) { s.frameId = 0; s.mediaSig = ''; } }
+});
 
 // Вкладка закрыта — гасим её сессию и карты (иначе утечёт сокет/состояние).
 browser.tabs.onRemoved.addListener((tabId) => {
@@ -202,6 +234,8 @@ browser.tabs.onRemoved.addListener((tabId) => {
  *  но остаёмся в комнате. Un-detach: шлём MODE, снапшот прилетит направленным STATE. */
 function setMode(s: Session, msg: SetModeMsg): void {
   s.detached = msg.detached;
+  syncHolds(s);
+  void persistSessions().catch(() => {});
   sendWire(s, { type: 'MODE', detached: msg.detached });
   notifyPopup(s);
 }
@@ -247,9 +281,11 @@ browser.alarms.onAlarm.addListener((alarm) => {
 
 // Тумблер на иконке расширения: показывает/скрывает островок (overlayEnabled);
 // content-скрипты реагируют через storage.onChanged.
-browser.action.onClicked.addListener(async () => {
-  const s = await loadSettings();
-  await saveSettings({ overlayEnabled: !s.overlayEnabled });
+browser.action.onClicked.addListener(async (tab) => {
+  if (tab.id != null) {
+    try { await browser.tabs.sendMessage(tab.id, { kind: 'toggle-overlay' }, { frameId: 0 }); }
+    catch { await browser.action.setTitle({ title: 'SyncWatch — откройте обычную веб-страницу и перезагрузите ее' }); }
+  }
 });
 
 /** Отразить состояние островка на иконке (бейдж «off» когда скрыт). */
@@ -268,10 +304,22 @@ async function syncActionBadge(): Promise<void> {
 browser.runtime.onInstalled.addListener(() => { void syncActionBadge(); void ensurePresenceAlarm(); });
 browser.runtime.onStartup.addListener(() => { void syncActionBadge(); void ensurePresenceAlarm(); });
 browser.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local') return;
-  if (changes.settings) void syncActionBadge();
-  // sharePresence живёт в блобе settings; friends — отдельный ключ. Оба влияют на аларм.
-  if (changes.settings || changes.friends) void ensurePresenceAlarm();
+  if (area === 'local' && changes.settings) {
+    void syncActionBadge();
+    const next = changes.settings.newValue;
+    const old = changes.settings.oldValue;
+    if (next?.sharePresence === false && old?.sharePresence !== false) void revokePresence(old?.serverUrl);
+    if (old?.serverUrl && next?.serverUrl !== old.serverUrl) void revokePresence(old.serverUrl);
+    if (next?.sharePresence !== false) void tickPresence();
+    for (const s of allSessions()) {
+      if (typeof next?.deviceName === 'string' && next.deviceName !== s.deviceName) { s.deviceName = next.deviceName; sendWire(s, { type: 'JOIN', room: s.room, name: s.deviceName }); }
+      if (typeof next?.autoConnect === 'boolean') s.autoConnect = next.autoConnect;
+      if (typeof next?.driftThreshold === 'number') s.driftThreshold = next.driftThreshold;
+    }
+    void persistSessions().catch(() => {});
+  }
+  if (area === 'local' && (changes.settings || changes.friends)) void ensurePresenceAlarm();
+
 });
 void syncActionBadge(); // при инициализации service worker
 void ensurePresenceAlarm(); // presence-аларм переживает выгрузку SW — восстанавливаем на старте

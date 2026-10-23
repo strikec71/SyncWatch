@@ -5,6 +5,8 @@
 // (у того другой ключ хэша, `r`/`syncwatch`, — не пересекается) и ДО startNavSync().
 
 import browser from '../shared/browser';
+import { normalizeServerUrl } from '../shared/validation';
+import { showFloatingLayer, removeFloatingLayer } from './floating-layer';
 
 export function handleFriendInvite(): void {
   if (window.top !== window) return; // хэш — только у верхнего документа
@@ -13,12 +15,14 @@ export function handleFriendInvite(): void {
 
   const params = new URLSearchParams(hash);
   const id = (params.get('syncwatch-friend') ?? '').trim();
-  if (!id) return; // не наше приглашение в друзья — не вмешиваемся (SPA-роутинг и пр.)
+  if (!id || !/^[a-f0-9]{64}$/.test(id)) return; // не наше приглашение в друзья — не вмешиваемся (SPA-роутинг и пр.)
 
   // URLSearchParams.get() уже раз-декодирует значение (add-friend-link кодирует
   // encodeURIComponent один раз) — второй decodeURIComponent не нужен.
-  const name = (params.get('n') ?? '').trim();
-  const serverUrl = (params.get('s') ?? '').trim() || undefined;
+  const name = (params.get('n') ?? '').trim().slice(0, 64);
+  const serverUrl = normalizeServerUrl(params.get('s') ?? '');
+  const inviteToken = params.get('t') ?? '';
+  if (!serverUrl || !/^[a-f0-9]{64}$/.test(inviteToken)) return;
 
   // Срезаем хэш, чтобы приглашение не сработало повторно при навигации/перезагрузке.
   try {
@@ -26,7 +30,7 @@ export function handleFriendInvite(): void {
   } catch { /* некоторые песочницы запрещают replaceState */ }
 
   void browser.runtime
-    .sendMessage({ kind: 'friend-request-incoming', id, name, serverUrl })
+    .sendMessage({ kind: 'friend-request-incoming', id, name, serverUrl, inviteToken })
     .catch(() => { /* SW перезапускается — повторится при следующем открытии ссылки */ });
 
   showToast(`SyncWatch: запрос в друзья от ${name || 'кого-то'} — откройте островок, раздел «Друзья»`);
@@ -35,8 +39,8 @@ export function handleFriendInvite(): void {
 /** Короткое всплывающее подтверждение (4с). Дальше запрос виден в островке → «Друзья». */
 function showToast(text: string): void {
   const host = document.createElement('div');
-  host.style.cssText = 'position:fixed;z-index:2147483647;top:16px;left:50%;transform:translateX(-50%);';
-  const shadow = host.attachShadow({ mode: 'open' });
+  host.style.cssText = 'position:fixed;inset:auto;margin:0;border:0;padding:0;background:transparent;top:16px;left:50%;transform:translateX(-50%);';
+  const shadow = host.attachShadow({ mode: 'closed' });
   const box = document.createElement('div');
   box.textContent = text;
   box.style.cssText =
@@ -44,5 +48,6 @@ function showToast(text: string): void {
     'padding:9px 14px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:80vw;';
   shadow.appendChild(box);
   document.documentElement.appendChild(host);
-  setTimeout(() => host.remove(), 4000);
+  showFloatingLayer(host, 30);
+  setTimeout(() => { removeFloatingLayer(host); host.remove(); }, 4000);
 }

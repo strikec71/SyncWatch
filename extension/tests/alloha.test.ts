@@ -6,6 +6,23 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { allohaBuildSig, allohaParseSig, findAdapter } from '../src/content/adapters';
 
+describe('Alloha advertisement boundary', () => {
+  function adState(video: object) {
+    const doc = {
+      querySelector: (selector: string) => selector.includes('data-select') || selector === 'video#player' ? {} : null,
+      querySelectorAll: () => [video],
+    } as unknown as Document;
+    return findAdapter('mirror.test', doc)?.isAd?.(doc);
+  }
+  it('recognizes a visible playing VAST advertisement', () => {
+    expect(adState({ paused: false, ended: false, readyState: 4, getClientRects: () => [{}] })).toBe(true);
+  });
+  it('does not hold the room for a hidden or paused advertisement', () => {
+    expect(adState({ paused: false, ended: false, readyState: 4, getClientRects: () => [] })).toBe(false);
+    expect(adState({ paused: true, ended: false, readyState: 4, getClientRects: () => [{}] })).toBe(false);
+  });
+});
+
 // В node-окружении vitest нет CSS.escape и MouseEvent — драйв кастомных дропдаунов их зовёт.
 beforeAll(() => {
   const g = globalThis as { CSS?: { escape: (s: string) => string }; MouseEvent?: unknown };

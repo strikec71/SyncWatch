@@ -166,14 +166,14 @@ export class FriendsPanel {
 
   /** Мутации — fire-and-forget: background рассылает свежий `friends-status` после каждой. */
   private send(msg: RuntimeMessage): void {
-    void browser.runtime.sendMessage(msg).catch(() => {});
+    void browser.runtime.sendMessage(msg).then((r: { error?: string } | undefined) => { if (r?.error) this.hint(r.error); }).catch(() => this.hint('Связь с расширением прервана — повторите действие'));
   }
 
   private async addLink(): Promise<void> {
     const r = (await browser.runtime
       .sendMessage({ kind: 'add-friend-link' })
       .catch(() => null)) as { link?: string; error?: string } | null;
-    if (r?.link) this.copy(r.link, 'Ссылка для друга скопирована');
+    if (r?.link) this.copy(r.link, 'Ссылка скопирована: действует 7 дней; прежняя ссылка заменена');
     else this.hint(r?.error || 'Не удалось создать ссылку — укажите адрес сервера в «Настройках»');
   }
 }
