@@ -54,8 +54,14 @@ async function main() {
 
   console.log(`\n✅ Упаковано v${version}:`);
   console.log(`   Chrome  → ${chromeZip}`);
-  console.log('\nДальше (см. PUBLISHING.md):');
-  console.log('  • Chrome Web Store → существующая карточка SyncWatch (0.6.0) → загрузить ZIP как новую версию.');
+  const config = JSON.parse(await readFile(join(distDir, 'chrome/release-config.json'), 'utf8'));
+  if (config.serverUrl) {
+    console.log(`   Сервер по умолчанию → ${config.serverUrl}`);
+    console.log('\nДля магазина используйте пакет из успешного Release SyncWatch (см. docs/releases/DEPLOYMENT.md).');
+  } else {
+    console.log('\nСборка для разработки: сервер по умолчанию не задан.');
+    console.log('Магазинный пакет с проверенным сервером создаёт workflow Release SyncWatch.');
+  }
 }
 
 main().catch((err) => {

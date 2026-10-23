@@ -66,11 +66,18 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: server/package-lock.json
+      - name: Confirm release tag before production deployment
+        shell: bash
+        run: |
+          SW_TAG="v$(node -p "require('./extension/package.json').version")"
+          test "$(git rev-parse "${SW_TAG}^{commit}")" = "$GITHUB_SHA"
       - name: Check Cloudflare configuration
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
