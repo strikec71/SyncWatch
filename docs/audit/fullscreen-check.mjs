@@ -79,9 +79,13 @@ try{
   if(mode==='iframe')record('iframe: parent UI is hidden and leaf frame owns presentation',await page.evaluate(()=>window.ui.overlay===null),await page.evaluate(()=>window.ui.overlay===null));
   await click(view,'#chat-open');
   await page.waitForTimeout(350);
-
+  // Fast CI machines reach the next mode before the previous send's 1 s
+  // cooldown expires. Wait for the real UI state without changing its clock.
+  await view.waitForFunction(()=>!window.ui.overlay.chat.sending&&Date.now()>=window.ui.overlay.chat.cooldownUntil);
+  const quickCount=await view.evaluate(()=>window.sent.length);
   await click(view,'.sector-like');
-  record(mode+': real pointer click selects wheel message',await view.evaluate(()=>window.sent.at(-1)),await view.evaluate(()=>window.sent.at(-1)?.code==='like'));
+  await view.waitForFunction(count=>window.sent.length>count,quickCount);
+  record(mode+': real pointer click selects wheel message',await view.evaluate(()=>window.sent.at(-1)),await view.evaluate(count=>window.sent.length===count+1&&window.sent.at(-1)?.code==='like',quickCount));
   await deliver({kind:'chat',entry:{text:'<img src=x onerror=alert(1)>',name:'Viewer',self:false,ts:Date.now()}});
   await page.waitForTimeout(300);
   const bubble=await view.evaluate(()=>{
@@ -95,8 +99,10 @@ try{
   await click(view,'#chatbox > summary');
   if(mode==='iframe')record('iframe: unsent draft follows the active UI',await inputValue(view),await inputValue(view)==='Черновик между фреймами');
   await fill(view,'Текстовый чат в fullscreen');
-  await page.waitForTimeout(1000);if(mode==='native')await click(view,'#chatsend');else await page.keyboard.press('Enter');
-  await view.waitForFunction(()=>window.sent.at(-1)?.kind==='send-text-message');
+  await view.waitForFunction(()=>!window.ui.overlay.chat.sending&&Date.now()>=window.ui.overlay.chat.cooldownUntil);
+  const textCount=await view.evaluate(()=>window.sent.length);
+  if(mode==='native')await click(view,'#chatsend');else await page.keyboard.press('Enter');
+  await view.waitForFunction(count=>window.sent.length===count+1&&window.sent.at(-1)?.kind==='send-text-message'&&window.ui.overlay.shadow.querySelector('#chatinput').value==='',textCount);
   record(mode+(mode==='native'?': text sends by mouse button and clears only on success':': text sends with Enter and clears only on success'),await view.evaluate(()=>({message:window.sent.at(-1),value:window.ui.overlay.shadow.querySelector('#chatinput').value})),await inputValue(view)==='');
   await click(view,'#chatbox > summary');
   await click(view,'#room');

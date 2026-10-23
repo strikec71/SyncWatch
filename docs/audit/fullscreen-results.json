@@ -1,0 +1,243 @@
+[
+  {
+    "id": "container: entering fullscreen preserves native media playback",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "container: existing panel and status banner remain interactive above fullscreen",
+    "observed": {
+      "panel": true,
+      "banner": true,
+      "fs": "DIV"
+    },
+    "pass": true
+  },
+  {
+    "id": "container: real pointer click selects wheel message",
+    "observed": {
+      "kind": "send-quick-message",
+      "code": "like"
+    },
+    "pass": true
+  },
+  {
+    "id": "container: incoming text bubble stays above fullscreen and escapes HTML",
+    "observed": {
+      "text": "💬 Viewer: <img src=x onerror=alert(1)>",
+      "above": true,
+      "injected": 0
+    },
+    "pass": true
+  },
+  {
+    "id": "container: wheel opens and closes entirely with the mouse",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "container: text sends with Enter and clears only on success",
+    "observed": {
+      "message": {
+        "kind": "send-text-message",
+        "text": "Текстовый чат в fullscreen"
+      },
+      "value": ""
+    },
+    "pass": true
+  },
+  {
+    "id": "container: restacking preserves input focus",
+    "observed": "room",
+    "pass": true
+  },
+  {
+    "id": "video: entering fullscreen preserves native media playback",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "video: existing panel and status banner remain interactive above fullscreen",
+    "observed": {
+      "panel": true,
+      "banner": true,
+      "fs": "DIV"
+    },
+    "pass": true
+  },
+  {
+    "id": "video: real pointer click selects wheel message",
+    "observed": {
+      "kind": "send-quick-message",
+      "code": "like"
+    },
+    "pass": true
+  },
+  {
+    "id": "video: incoming text bubble stays above fullscreen and escapes HTML",
+    "observed": {
+      "text": "💬 Viewer: <img src=x onerror=alert(1)>",
+      "above": true,
+      "injected": 0
+    },
+    "pass": true
+  },
+  {
+    "id": "video: wheel opens and closes entirely with the mouse",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "video: text sends with Enter and clears only on success",
+    "observed": {
+      "message": {
+        "kind": "send-text-message",
+        "text": "Текстовый чат в fullscreen"
+      },
+      "value": ""
+    },
+    "pass": true
+  },
+  {
+    "id": "video: restacking preserves input focus",
+    "observed": "room",
+    "pass": true
+  },
+  {
+    "id": "native: entering fullscreen preserves native media playback",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "native: existing panel and status banner remain interactive above fullscreen",
+    "observed": {
+      "panel": true,
+      "banner": true,
+      "fs": "DIV"
+    },
+    "pass": true
+  },
+  {
+    "id": "native: real pointer click selects wheel message",
+    "observed": {
+      "kind": "send-quick-message",
+      "code": "like"
+    },
+    "pass": true
+  },
+  {
+    "id": "native: incoming text bubble stays above fullscreen and escapes HTML",
+    "observed": {
+      "text": "💬 Viewer: <img src=x onerror=alert(1)>",
+      "above": true,
+      "injected": 0
+    },
+    "pass": true
+  },
+  {
+    "id": "native: wheel opens and closes entirely with the mouse",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "native: text sends by mouse button and clears only on success",
+    "observed": {
+      "message": {
+        "kind": "send-text-message",
+        "text": "Текстовый чат в fullscreen"
+      },
+      "value": ""
+    },
+    "pass": true
+  },
+  {
+    "id": "native: restacking preserves input focus",
+    "observed": "room",
+    "pass": true
+  },
+  {
+    "id": "iframe: entering fullscreen preserves native media playback",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "iframe: existing panel and status banner remain interactive above fullscreen",
+    "observed": {
+      "panel": true,
+      "banner": true,
+      "fs": "BODY"
+    },
+    "pass": true
+  },
+  {
+    "id": "iframe: parent UI is hidden and leaf frame owns presentation",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "iframe: real pointer click selects wheel message",
+    "observed": {
+      "kind": "send-quick-message",
+      "code": "like"
+    },
+    "pass": true
+  },
+  {
+    "id": "iframe: incoming text bubble stays above fullscreen and escapes HTML",
+    "observed": {
+      "text": "💬 Viewer: <img src=x onerror=alert(1)>",
+      "above": true,
+      "injected": 0
+    },
+    "pass": true
+  },
+  {
+    "id": "iframe: wheel opens and closes entirely with the mouse",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "iframe: unsent draft follows the active UI",
+    "observed": "Черновик между фреймами",
+    "pass": true
+  },
+  {
+    "id": "iframe: text sends with Enter and clears only on success",
+    "observed": {
+      "message": {
+        "kind": "send-text-message",
+        "text": "Текстовый чат в fullscreen"
+      },
+      "value": ""
+    },
+    "pass": true
+  },
+  {
+    "id": "page DOM cannot inspect room code or chat through extension hosts",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "mouse fullscreen replacement has no page-accessible shadow root",
+    "observed": true,
+    "pass": true
+  },
+  {
+    "id": "exit restores native target/container styles",
+    "observed": {
+      "video": "",
+      "player": ""
+    },
+    "pass": true
+  },
+  {
+    "id": "failed send preserves draft and displays error",
+    "observed": "Не потерять черновик",
+    "pass": true
+  },
+  {
+    "id": "compact panel does not suppress notifications",
+    "observed": true,
+    "pass": true
+  }
+]
