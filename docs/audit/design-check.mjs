@@ -44,12 +44,25 @@ try {
  await page.waitForFunction(() => window.ui?.overlay?.host?.matches(':popover-open') && !window.ui.overlay.shadow.querySelector('.panel').classList.contains('compact'));
  const read = fn => page.evaluate(fn);
  async function click(selector) {
+  // The closed shadow root needs coordinate input. Wait for reflow/animations
+  // before measuring, just as a locator click waits for a stable target.
+  await page.waitForFunction(async selector => {
+   const el=window.ui.overlay.shadow.querySelector(selector);el.scrollIntoView({block:'nearest'});
+   let previous='',stable=0;
+   for(let i=0;i<30;i++){
+    await new Promise(requestAnimationFrame);const r=el.getBoundingClientRect();
+    const current=[r.x,r.y,r.width,r.height].join(',');stable=current===previous?stable+1:0;previous=current;
+    if(stable>=3&&r.width&&r.height)return true;
+   }
+   return false;
+  }, selector);
   const point = await page.evaluate(selector => { const el=window.ui.overlay.shadow.querySelector(selector);el.scrollIntoView({block:'nearest'});const r=el.getBoundingClientRect();if(!r.width||!r.height)throw Error('Hidden control: '+selector);return {x:r.x+r.width/2,y:r.y+r.height/2}; }, selector);
   await page.mouse.click(point.x, point.y);
  }
  async function select(selector, value) {
   const index = await page.evaluate(({selector,value}) => [...window.ui.overlay.shadow.querySelector(selector).options].findIndex(o=>o.value===value), {selector,value});
   await click(selector); await page.keyboard.press('Home'); for(let i=0;i<index;i++)await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+  await page.waitForFunction(({selector,value})=>window.settings[window.ui.overlay.shadow.querySelector(selector).id]===value,{selector,value});
  }
  async function screenshot(name) {
   await page.waitForTimeout(320);
@@ -76,7 +89,9 @@ try {
  record('tabs support arrow-key navigation',await read(()=>window.ui.overlay.shadow.activeElement.id),await read(()=>!window.ui.overlay.shadow.querySelector('#friendsbox').hidden));
  await screenshot('friends'); await click('#tab-appearance'); await screenshot('appearance');
  await click('[data-accent-choice="ocean"]'); await select('#uiTheme','light'); await select('#uiDensity','compact'); await select('#uiDockSide','left');
- await click('#uiOpacity');await page.keyboard.press('Home');await click('#uiMotion');
+ await click('#uiOpacity');await page.keyboard.press('Home');
+ await page.waitForFunction(()=>window.settings.uiOpacity===85);
+ await click('#uiMotion');
  await page.waitForFunction(()=>window.settings.uiOpacity===85&&window.settings.uiMotion===false);
  record('appearance controls persist together with connection settings',await read(()=>window.settings),await read(()=>window.settings.uiAccent==='ocean'&&window.settings.uiTheme==='light'&&window.settings.uiDensity==='compact'&&window.settings.uiDockSide==='left'&&window.settings.serverUrl==='wss://fixture.test'&&window.settings.room==='watch-fixture'));
  record('theme, size, side and reduced motion apply immediately',await read(()=>({theme:window.ui.overlay.host.dataset.theme,x:window.ui.overlay.host.getBoundingClientRect().x,width:window.ui.overlay.host.getBoundingClientRect().width})),await read(()=>window.ui.overlay.host.dataset.theme==='light'&&window.ui.overlay.host.dataset.motion==='off'&&window.ui.overlay.host.getBoundingClientRect().x<20));
