@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Синхрон идентичности контента (Фаза 2): URL страницы вкладки в пределах комнаты.
 // Аниме-/видео-сайты меняют серию сменой адреса (напр. jut.su) — а протокол синхрона
 // command-only и «идентичности контента» не знает, поэтому приглашённый попадал на
@@ -130,7 +131,7 @@ export function onNavReport(s: Session, rawUrl: string): void {
   if (s.navigationOrigin && new URL(url).origin !== s.navigationOrigin) {
     if (!s.detached) {
       s.detached = true; sendWire(s, { type: 'MODE', detached: true });
-      notifyEvent(s, 'Вы покинули сайт просмотра — включен режим соло'); notifyPopup(s);
+      notifyEvent(s, tr('Вы покинули сайт просмотра — включен режим соло')); notifyPopup(s);
       void persistSessions().catch(() => {});
     }
     return;
@@ -141,7 +142,7 @@ export function onNavReport(s: Session, rawUrl: string): void {
     if (now - s.pendingPageAt >= 10000) {
       s.detached = true; s.pendingPageUrl = '';
       sendWire(s, { type: 'MODE', detached: true });
-      notifyEvent(s, 'На новой странице нет видео — включен режим соло'); notifyPopup(s);
+      notifyEvent(s, tr('На новой странице нет видео — включен режим соло')); notifyPopup(s);
       void persistSessions().catch(() => {});
     }
     return;
@@ -169,8 +170,8 @@ export function onNavReport(s: Session, rawUrl: string): void {
       noteActivity(s);      // марафон сериала: переход серии ≠ простой
       // Тост «переходим…» погиб с прошлым документом (reload) — досылаем свежий уже здесь.
       notifyEvent(s, s.navFromName
-        ? `Перешли на страницу комнаты вслед за ${s.navFromName}`
-        : 'Перешли на страницу комнаты');
+        ? tr`Перешли на страницу комнаты вслед за ${s.navFromName}`
+        : tr('Перешли на страницу комнаты'));
       s.navFromName = '';
       return;
     case 'ignore':
@@ -268,7 +269,7 @@ function applyRemoteMediaNav(s: Session, msg: NavMessage): void {
   s.expectedSig = sig;
   s.expectedSigAt = Date.now();
   s.mediaSig = sig;
-  notifyEvent(s, `${peerName(s, msg.from)} переключил(а) серию/озвучку — синхронизируем`);
+  notifyEvent(s, tr`${peerName(s, msg.from)} переключил(а) серию/озвучку — синхронизируем`);
   sendToActiveFrame(s, { kind: 'media-apply', sig });
 }
 
@@ -296,7 +297,7 @@ export function onMediaApplyFailed(s: Session, actualSig: string | null): void {
   notifyPopup(s);
   s.expectedSig = null; // contentMismatch blocks time synchronization until corrected
   s.mediaSig = actualSig || ''; // Preserve only the actual local selection.
-  notifyEvent(s, 'Не удалось переключить серию/озвучку за партнёром — такой опции нет в вашем плеере, остаёмся на текущей');
+  notifyEvent(s, tr('Не удалось переключить серию/озвучку за партнёром — такой опции нет в вашем плеере, остаёмся на текущей'));
 }
 
 /** Входящий NAV партнёра. scope:'page' → навигация вкладки; scope:'player' → смена
@@ -310,7 +311,7 @@ export async function applyRemoteNav(s: Session, msg: NavMessage): Promise<void>
   const url = normalizeSyncUrl(msg.url);
   if (url === null) return; // ревалидация схемы на применении (defense-in-depth)
   if (s.navigationOrigin && new URL(url).origin !== s.navigationOrigin) {
-    notifyEvent(s, 'Комната предлагает другой сайт — откройте приглашение явно'); return;
+    notifyEvent(s, tr('Комната предлагает другой сайт — откройте приглашение явно')); return;
   }
   noteActivity(s);
 
@@ -347,7 +348,7 @@ export async function applyRemoteNav(s: Session, msg: NavMessage): Promise<void>
   s.frameId = 0;          // активный плеерный фрейм протух — новый документ переустановит
   s.lastSync = null;      // анти-эхо старого документа сбрасываем
   resetTabFrames(s.tabId); // presence старого документа больше не действует
-  notifyEvent(s, `${peerName(s, msg.from)} переключил(а) страницу — переходим…`);
+  notifyEvent(s, tr`${peerName(s, msg.from)} переключил(а) страницу — переходим…`);
   browser.tabs.update(s.tabId, { url }).catch(() => { /* нет host-прав (FF) / вкладка ушла */ });
 }
 

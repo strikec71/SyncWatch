@@ -1,28 +1,59 @@
-# Свой сервер SyncWatch
+# Self-hosting SyncWatch
 
-Публичного сервера просмотра по умолчанию нет. Для работы нужен собственный или доверенный сервер и одинаковая новая версия расширения у всех участников.
+Store builds include the SyncWatch relay. You can instead use your own compatible
+Cloudflare Worker; everyone in a room must choose the same server. Chrome 120+ and
+a consistent current extension version are recommended for all participants.
 
-1. Установите Node.js 24, создайте аккаунт Cloudflare.
-2. В server/ выполните `npm ci` и `npm run verify`.
-3. Для проверки запустите `npm run dev`: локальный адрес `ws://localhost:8787`.
-4. Для собственного развертывания выполните `npx wrangler login`, затем `npm run deploy`. Авторизация и публикация выполняются владельцем сервера. Durable Object объявлен в wrangler.toml; текущая логика комнаты хранит состояние в памяти, служебный alarm — в storage.
-5. Скопируйте выданный HTTPS-адрес, замените схему на wss://. Публичные серверы требуют WSS; незашифрованный WS разрешен только для localhost/127.0.0.1/::1.
-6. В расширении откройте обычную веб-страницу и нажмите иконку SyncWatch. Панель доступна даже без видео. В «Настройках» задайте сервер, нажмите «Код» и «Войти», затем «Позвать».
+1. Install Node.js 24 and configure a Cloudflare account.
+2. In server/, run npm ci and npm run verify.
+3. For local checks, run npm run dev. The address is ws://localhost:8787.
+4. For your deployment, sign in with npx wrangler login, inspect wrangler.toml and
+   run npm run deploy. Keep the Room/Presence namespaces and migrations intact.
+5. Use the resulting HTTPS origin as a wss:// origin in Room → Connection settings.
+   Public connections require WSS; WS is limited to localhost/127.0.0.1/::1.
+6. Create a room code, Connect, then Invite to room. The toolbar panel is available
+   on normal web pages even before a video is found.
 
-Новый код `watch-...` содержит 128 случайных бит и является ключом доступа. Не публикуйте его. Ручные короткие названия допустимы для открытых комнат, но не защищают от угадывания. Аккаунтов, модерации и удаления участника хостом в текущей модели нет.
+Generated watch-... codes have 128 unpredictable bits and grant room access. Do
+not publish private codes. Short manual codes can be guessed. The current system
+has no accounts, host admission approval or participant removal.
 
-Приглашение на видео: `https://video-site/watch#syncwatch=<код>&s=<закодированный-wss-адрес>`. Также поддерживаются маркированные серверные `/join#r=<код>&s=<адрес>` и `/r/<код>`. Получатель видит комнату/сервер и подтверждает вход. Ссылка не подменяет молча настройки остальных вкладок.
+Invitation formats: https://video-site/watch#syncwatch=<code>&s=<encoded-wss-origin>,
+marked server /join#r=<code>&s=<origin>, and /r/<code>. Recipients explicitly confirm
+the server and room; invitation links do not silently overwrite other tabs.
+Server invitation/privacy pages support ?lang=en or ?lang=ru. Browser preference
+otherwise chooses Russian for ru locales and English for other locales.
 
-Каждая вкладка подключается независимо. Переключатель «Переподключаться» восстанавливает разрыв, а storage.session позволяет пережить выгрузку фонового worker. Перезапуск всего браузера очищает storage.session: повторный вход выполняется явно. Соло оставляет участника в комнате, но отключает совместное управление.
+Each tab has its own session. Connect automatically enables recovery from a lost
+connection. storage.session restores intentions after background worker suspension;
+a full browser restart clears it. Watch solo retains the room/chat with independent
+playback. Automatic navigation stays within the video site. For another site,
+share a new invitation. Missing episode/audio choices suspend time synchronization.
 
-Автоматическая смена страницы ограничена сайтом просмотра. Уход на другой сайт включает соло; новая страница без видео не рассылается в комнату. Для намеренного перехода на другой сайт отправьте новое приглашение. Если нужной серии/озвучки нет, синхронизация времени приостанавливается до исправления выбора.
+Room limits: 10 connections, JOIN within 10 seconds, bounded message size/frequency,
+and stale-client cleanup. Operators remain responsible for service access, quotas,
+costs, logs and policy. These limits are not a complete public-service abuse system.
 
-Комната принимает до 10 соединений. Сервер требует JOIN за 10 секунд, ограничивает размер и частоту сообщений и удаляет устаревшие соединения. Это не полноценная система защиты публичного сервиса: владелец отвечает за доступ, эксплуатацию, затраты и правила своего сервера.
+## Friends and chat
 
-Если панель не появляется после установки/обновления, перезагрузите страницу: браузер не обязан внедрять новый content-script в уже открытые документы. На внутренних страницах браузера и в магазине расширений content-script недоступен. При запрете автоплея кликните по странице плеера.
+Presence uses its own Durable Object (v2 migration in wrangler.toml). Server 0.4.0+
+supports signed friend requests and separate invitation tokens. Both friends use
+the same server. Add friend creates a 7-day link; a new link replaces it. Turning
+sharing off revokes visibility; disconnected status expires within about 150 seconds.
+Friend lists stay local, while the server temporarily processes access-list hashes
+and confirmations (until acknowledged or 14 days). Explain this in your privacy policy.
 
+Chat supports 200 characters, one message/second including quick messages, and
+50 messages in session memory. No permanent application chat archive is provided.
 
+## Troubleshooting
 
-Функция друзей использует отдельный Durable Object Presence (миграция v2 уже в wrangler.toml). Сервер 0.4.0 нужен для новых защищенных приглашений: оба участника выбирают один сервер. «Добавить друга» создает ссылку на 7 дней и включает ожидание первого подтверждения; новая ссылка заменяет прежнюю. Выключение обмена статусом отзывает видимость, при отсутствии сети старый статус истекает примерно через 150 секунд. Список друзей локальный; сервер временно получает хеши списка доступа и обрабатывает подтверждения дружбы до 14 дней. Смотрите /privacy.
+Reload video pages after installing/updating; Chrome does not inject new scripts
+into every existing document automatically. Browser-internal pages and the Web
+Store cannot host the panel. Click the player if autoplay is blocked. Test actual
+players, cross-origin frames, ads, fullscreen and worker suspension separately.
 
-Текстовый чат — до 200 символов, общая частота с колесом не более одного сообщения в секунду. История до 50 записей хранится в памяти сессии и не является постоянным архивом. Соло позволяет общаться, сохраняя независимое воспроизведение.
+The chosen operator and Cloudflare process connection metadata and relayed content.
+HTTPS/WSS protects transport; end-to-end encryption is not provided. See /privacy
+and adapt that policy to your own operation. Language/appearance preferences remain
+local and do not change room connections.

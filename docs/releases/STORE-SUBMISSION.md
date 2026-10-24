@@ -1,39 +1,63 @@
-# Материалы для модерации Chrome Web Store
+# Chrome Web Store submission materials — 0.10.0
 
-## Назначение
+Primary listing: English, with a maintained Russian translation. Copy is in
+../store/0.10.0/description-en.txt and description-ru.txt. Five current 1280 × 800
+screenshots in the same folder show actual UI modules with illustrative room data.
+The owner requested review and **automatic publication after approval**.
 
-SyncWatch синхронизирует воспроизведение HTML-видео между участниками одной комнаты: паузу, перемотку, скорость и смену контента. Быстрые сообщения, текстовый чат и присутствие друзей поддерживают совместный просмотр. Видео, звук, пароли сайта и медиатека не передаются.
+## Single purpose
 
-## Обоснование разрешений
+Synchronize HTML video playback for a room of up to 10 people, with room chat,
+quick messages and friend presence supporting the shared viewing session. Video
+and audio stay on the source site; no media library is supplied.
 
-- `storage`: настройки, идентичность установки, локальный список друзей и подтверждения; `storage.session` — восстановление подключенных вкладок после выгрузки worker.
-- `alarms`: keepalive/reconnect, проверка обновлений и периодический обмен присутствием с друзьями.
-- `<all_urls>` и all_frames: обнаружение HTMLVideoElement на произвольных сайтах и в кросс-доменных iframe; заранее фиксированного списка плееров и доменов нет. По умолчанию используется сервер SyncWatch на Cloudflare; пользователь может выбрать собственный. Синхронизация URL идет только для подключенной вкладки. Режим соло отключает совместное управление.
-- MAIN-world файл: локальная обработка fullscreen и кнопки нативного видео. Он не использует API расширения и не получает настройки, криптографические ключи или сообщения. Остальной код работает в isolated world; интерфейс использует закрытые shadow root.
+## Permissions and remote code
 
-Удаленный код не загружается: JavaScript включен в ZIP. WebSocket и HTTP передают данные команд/чата/присутствия, которые не исполняются как код.
+- storage: language/appearance and connection preferences, installation identity,
+  local friends/requests/acknowledgements; storage.session restores tab intentions
+  after background suspension.
+- alarms: connection maintenance/retry, update checks and periodic presence.
+- All websites/frames: detect and control HTML video on arbitrary viewing pages
+  and cross-origin player frames. Sync URLs only for connected sessions. The relay
+  is configurable; the domain/player list cannot be fixed in advance.
+- Bundled MAIN-world script: gesture-time fullscreen and the native video control.
+  It receives only a public locale value; no extension APIs, private keys, room
+  settings or messages. Other extension logic runs in the isolated world with
+  closed-shadow UI.
+- No remote executable code, translation service, analytics or trackers. HTTP and
+  WebSocket carry data, not code. No additional permissions were added in 0.10.0.
 
-## Данные: сверять с определениями реальной формы
+## Data disclosure
 
-| Фактическая обработка | Что раскрыть |
+| Processing | Store disclosure |
 |---|---|
-| URL текущего совместно просматриваемого контента | Передача URL выбранному серверу и комнате; не заявлять отсутствие browsing data только потому, что permission history не используется |
-| Текст чата и быстрые сообщения | Personal communications: содержимое сообщений передается серверу и участникам; серверного архива чата нет |
-| Отображаемое имя устройства, публичный ID/ключ установки | Пользовательское имя и постоянный псевдонимный идентификатор; имя может быть произвольным, аккаунт/email не запрашиваются |
-| Выбор серии/озвучки и события play/pause/seek/rate, буферизация/реклама | Данные контента и действия, необходимые для синхронизации; без аналитики кликов, глобального перехвата клавиатуры или записи экрана |
-| Присутствие, код комнаты и хеши разрешенных получателей | Обмен выбранным сервером и подтвержденными друзьями; статус 150 секунд, подтверждения до квитанции/14 дней, токены приглашений 7 дней |
-| Приватный P-256 ключ | Хранится на устройстве; сервер получает только публичный ключ и подписи запросов |
+| Viewing URL and episode/season/audio choice | Web history/site content; disclose relay/room transmission despite no history API permission |
+| Chat and quick messages | Personal communications; no permanent server chat archive |
+| Chosen display name and public installation ID/key | Personally identifying/pseudonymous information; no account or email required |
+| Secret room code and signed friend authorization | Authentication data; private installation key remains local |
+| Play/pause/seek/rate, buffering/ads and presence | User activity necessary to synchronization/presence |
+| Friend access-list hashes and confirmations | Temporary relay processing; status TTL 150 seconds, tokens 7 days, acknowledgements up to 14 days |
 
-Не заявлять сквозное шифрование: WSS/HTTPS защищают канал, выбранный сервер обрабатывает содержимое. Данные не продаются и не используются для рекламы/кредитоспособности. Данные передаются только для описанных функций; политика сервера должна учитывать Cloudflare и его эксплуатационные журналы.
+Keep the six applicable form categories selected: personally identifiable
+information, authentication information, personal communications, web history,
+user activity and website content. Medical, financial and precise location data
+are not requested. Confirm the existing limited-use certifications accurately.
 
-## Инструкции проверяющему
+HTTPS/WSS protects transport; do not claim end-to-end encryption. The selected
+operator and Cloudflare process relayed data/network connections under their
+operating policies. No sale or advertising/creditworthiness use.
 
-Рабочий сервер и URL privacy берутся из успешного deployment job. Никакой платной регистрации, аккаунта расширения или учетных данных для входа не требуется.
+Privacy: https://syncwatch-signal.strikec71.workers.dev/privacy?lang=en
+Russian: https://syncwatch-signal.strikec71.workers.dev/privacy?lang=ru
 
-1. Установить проверяемый пакет в два профиля Chrome 120+ и открыть страницы с HTML-видео.
-2. Открыть SyncWatch мышью; в новой установке проверенный WSS-адрес сервера уже заполнен. Если ранее использовался собственный сервер, выбрать проверенный релизный адрес в «Настройках».
-3. Создать случайный код комнаты, подключиться и скопировать приглашение во второй профиль. Получатель явно подтверждает сервер и вход.
-4. Проверить play/pause/seek, колесо и текстовый чат (до 200 символов), полноэкранный режим и выход мышью. Для `<video controls>` служит кнопка ⛶ слева сверху.
-5. Для друзей создать ссылку «Добавить друга», открыть во втором профиле и принять запрос. Оба профиля должны выбрать один сервер. Выключение обмена статусом прекращает периодические запросы и отзывает видимость; без сети действует TTL.
+## Reviewer instructions
 
-Перед отправкой заполнить URL сервера/политики из успешного деплоя в кабинете. Не подставлять несуществующий сервер и не предоставлять проверяющим приватные комнаты настоящих пользователей.
+No SyncWatch account/payment. Chrome 120+, two profiles, same HTML video. Relay:
+wss://syncwatch-signal.strikec71.workers.dev. Create/connect a room and open its
+invite in profile 2; confirm entry. Test play/pause/seek, chat, fullscreen (native
+video: small ⛶ control), Friends → Add friend, and Style → Language. Both profiles
+use the same relay. If autoplay blocks playback, click Play. Privacy URL above.
+
+The dashboard's short instructions field has a 500-character limit; use a compact
+version without real-user room codes or credentials. Submission must be confirmed
+by the dashboard, not inferred from uploading the ZIP.

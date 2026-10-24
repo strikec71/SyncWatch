@@ -8,6 +8,7 @@ import { StatusBanner } from './banner';
 import { ChatBubbles } from './chat-bubbles';
 import { Overlay } from './overlay';
 import { DEFAULT_APPEARANCE, normalizeAppearance, type Appearance } from '../shared/appearance';
+import { setLanguage, getLanguage, type LanguagePreference } from '../shared/i18n';
 export function presentationDocument(): boolean {
   let fs = document.fullscreenElement;
   while (fs?.shadowRoot?.fullscreenElement) fs = fs.shadowRoot.fullscreenElement;
@@ -16,9 +17,14 @@ export function presentationDocument(): boolean {
 }
 export class ContentUI {
   private appearance: Appearance = DEFAULT_APPEARANCE;
-  private updateAppearance(settings: Partial<Appearance>): void {
+  private updateAppearance(settings: Partial<Appearance> & {language?: LanguagePreference}): void {
+    setLanguage(settings.language);
+    // MAIN-world control only receives a public locale, never settings/session data.
+    window.dispatchEvent(new CustomEvent('syncwatch-language', { detail: getLanguage() }));
     this.appearance = normalizeAppearance(settings);
     this.banner.setAppearance(this.appearance); this.bubbles.setAppearance(this.appearance);
+    if (this.bannerState && this.active) this.banner.apply(this.bannerState);
+    this.bubbles.refreshLanguage();
   }
   private banner = new StatusBanner();
   private bubbles = new ChatBubbles();
@@ -35,7 +41,9 @@ export class ContentUI {
     });
     browser.runtime.onMessage.addListener((msg: RuntimeMessage) => this.onMessage(msg));
     void loadSettings().then(settings => { this.enabled = settings.overlayEnabled; this.updateAppearance(settings); this.reconcile(); });
-    matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => this.updateAppearance(this.appearance));
+    matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+      this.banner.setAppearance(this.appearance); this.bubbles.setAppearance(this.appearance);
+    });
     void browser.runtime.sendMessage({kind:'query-video'}).then(r => { this.videoAvailable = !!r?.available; this.reconcile(); }).catch(() => {});
   }
   private reconcile(): void {

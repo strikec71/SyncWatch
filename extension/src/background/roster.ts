@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Зеркало roster + агрегация центрального баннера + уведомления оверлея.
 // Roster-based (Фаза A): состояние партнёра больше не бинарно — держим карту всех
 // участников и per-peer блокирующие состояния; баннер считаем поверх ВСЕХ
@@ -75,7 +76,7 @@ export function aggregateBanner(
   return {
     state: picked.state,
     since: picked.state === 'peer-ad' && b ? b.adSince : 0,
-    name: picked.p.name || 'Партнёр',
+    name: picked.p.name || '',
   };
 }
 
@@ -138,7 +139,7 @@ export function recomputeBanner(s: Session): void {
   const key = `${state}|${name}|${since}`;
   if (key === s.lastBannerKey) return;
   s.lastBannerKey = key;
-  const banner: BannerMsg = { kind: 'banner', state, since, name: name || 'Партнёр' };
+  const banner: BannerMsg = { kind: 'banner', state, since, name };
   browser.tabs.sendMessage(s.tabId, banner, { frameId: 0 }).catch(() => { /* нет баннера */ });
 }
 
@@ -152,10 +153,10 @@ export function applyRoster(s: Session, msg: RosterMessage): void {
 
   const { joined, left } = diffRoster(prev, msg.peers);
   for (const p of joined) {
-    if (p.id !== msg.self) notifyEvent(s, `${p.name || 'Партнёр'} подключился(-ась)`);
+    if (p.id !== msg.self) notifyEvent(s, tr`${p.name || tr('Партнёр')} подключился(-ась)`);
   }
   for (const p of left) {
-    if (p.id !== msg.self) notifyEvent(s, `${p.name || 'Партнёр'} отключился(-ась)`);
+    if (p.id !== msg.self) notifyEvent(s, tr`${p.name || tr('Партнёр')} отключился(-ась)`);
   }
 
   const nextMap = new Map<number, RosterPeer>(msg.peers.map((p) => [p.id, p]));
@@ -214,7 +215,7 @@ export function notifyEvent(s: Session, text: string): void {
 
 /** host получил REQUEST_CONTROL: предложить островку выдать право просителю. */
 export function pushControlRequest(s: Session, from: number): void {
-  const name = s.roster.get(from)?.name || 'Партнёр';
+  const name = s.roster.get(from)?.name || tr('Партнёр');
   const msg: ControlRequestMsg = { kind: 'control-request', from, name };
   sendToOverlays(s, msg);
 }

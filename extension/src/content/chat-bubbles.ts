@@ -32,6 +32,10 @@ export class ChatBubbles {
   private host: HTMLDivElement | null = null;
   private stack: HTMLElement | null = null;
   private timers = new Map<HTMLElement, number>();
+  private entries = new Map<HTMLElement, ChatEntry>();
+  refreshLanguage(): void {
+    for (const [bubble, entry] of this.entries) bubble.textContent = `💬 ${entry.name}: ${renderContent(entry)}`;
+  }
 
   /** Показать бабл для входящего сообщения. Своё (self) пропускаем — оно только в логе. */
   push(entry: ChatEntry): void {
@@ -46,12 +50,13 @@ export class ChatBubbles {
     bubble.className = 'bubble';
     bubble.textContent = `💬 ${entry.name}: ${content}`; // ← textContent ONLY (XSS-гейт)
     this.stack.appendChild(bubble);
+    this.entries.set(bubble, entry);
     while (this.stack.childElementCount > MAX_BUBBLES) {
       const oldest = this.stack.firstElementChild as HTMLElement;
-      clearTimeout(this.timers.get(oldest)); this.timers.delete(oldest); oldest.remove();
+      clearTimeout(this.timers.get(oldest)); this.timers.delete(oldest); this.entries.delete(oldest); oldest.remove();
     }
     this.timers.set(bubble, window.setTimeout(() => {
-      this.timers.delete(bubble); bubble.remove();
+      this.timers.delete(bubble); this.entries.delete(bubble); bubble.remove();
       if (!this.stack?.childElementCount && this.host) hideFloatingLayer(this.host);
     }, BUBBLE_TTL_MS));
 
@@ -82,6 +87,7 @@ export class ChatBubbles {
   }
 
   destroy(): void {
+    this.entries.clear();
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
     if (this.host) removeFloatingLayer(this.host);

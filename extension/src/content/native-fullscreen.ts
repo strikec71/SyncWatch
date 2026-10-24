@@ -1,3 +1,5 @@
+import { tr } from '../shared/i18n';
+import { setLanguage } from '../shared/i18n';
 // Chrome's native video-controls button bypasses Element.requestFullscreen in JS.
 // Replace that affordance with a small accessible control that uses our gesture-time
 // fullscreen path. MAIN world only: no extension API or user/session data.
@@ -23,7 +25,7 @@ function update(): void {
     if (host.parentNode !== parent) parent.append(host);
     host.style.left = `${Math.max(4, Math.min(innerWidth - 36, r.left + 8))}px`;
     host.style.top = `${Math.max(4, r.top + 8)}px`;
-    button.title = fs?.contains(video) ? 'Выйти из полноэкранного режима' : 'Во весь экран';
+    button.title = fs?.contains(video) ? tr('Выйти из полноэкранного режима') : tr('Во весь экран');
     button.setAttribute('aria-label', button.title);
   }
 }
@@ -43,7 +45,7 @@ function add(video: HTMLVideoElement): void {
     event.preventDefault(); event.stopPropagation();
     const fs = rootFullscreen();
     const request = fs?.contains(video) ? document.exitFullscreen() : video.requestFullscreen();
-    void request.catch(() => { button.title = 'Не удалось открыть полный экран — повторите нажатие'; button.setAttribute('aria-label',button.title); });
+    void request.catch(() => { button.title = tr('Не удалось открыть полный экран — повторите нажатие'); button.setAttribute('aria-label',button.title); });
   });
   shadow.append(button); controls.set(video,{host,button}); size.observe(video); schedule();
 }
@@ -63,6 +65,10 @@ new MutationObserver(records => {
 scan(document.documentElement);
 addEventListener('resize',schedule); document.addEventListener('scroll',schedule,true);
 document.addEventListener('fullscreenchange',schedule);
+window.addEventListener('syncwatch-language', event => {
+  const language = (event as CustomEvent<unknown>).detail;
+  if (language === 'en' || language === 'ru') { setLanguage(language); schedule(); }
+});
 
 // Preserve the familiar mouse double-click gesture without entering replaced-element
 // fullscreen through Chrome's native default action.

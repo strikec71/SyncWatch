@@ -18,7 +18,7 @@ browser.storage.onChanged.addListener=fn=>storageListeners.add(fn);
 browser.storage.onChanged.removeListener=fn=>storageListeners.delete(fn);
 window.deliver=msg=>[...listeners].forEach(fn=>fn(msg));
 window.sent=[]; window.rejectSend=false;
-let settings={deviceName:'Fixture',overlayEnabled:true,serverUrl:'ws://localhost:8787'};
+let settings={language:'ru',deviceName:'Fixture',overlayEnabled:true,serverUrl:'ws://localhost:8787'};
 browser.storage.local.get=async()=>({settings});
 browser.runtime.sendMessage=async msg=>{
  if(msg.kind==='query-video') return {available:true};

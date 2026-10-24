@@ -1,74 +1,123 @@
-# SyncWatch: текущая спецификация разработки
+# SyncWatch development specification
 
-Разрабатываемый интерфейс — 0.9.0 (Glass Lounge); отдельно отправленная на проверку
-магазинная 0.8.0 и ее тег не изменены. `overlay-shell.ts` отвечает за вкладки и
-оформление, `shared/appearance.ts` нормализует сохраняемые настройки, а
-`content/appearance.ts` задает общие токены панели, баннера, сообщений и колеса.
-Мини-значок раскрывает панель; параметры оформления не заменяют комнату/сервер
-активной вкладки. Все ресурсы поставляются внутри пакета. `test:browser` теперь
-включает fullscreen-check и design-check (результаты оформления — docs/audit/design/).
+Current extension: **0.10.0**, Glass Lounge with English/Russian language selection.
+Current server: **0.4.1**, localized invitation/privacy pages; room and presence
+protocols remain compatible. See docs/releases/STATUS.md for actual deployment,
+GitHub release and Chrome Web Store state. Uploaded or submitted is not published.
 
-Расширение для совместного просмотра до 10 человек. Видео и звук не передаются: сервер Cloudflare Workers/Durable Object упорядочивает команды, клиенты управляют HTMLVideoElement. Собственной медиатеки, аккаунтов и публичного сервера по умолчанию нет.
+SyncWatch synchronizes HTML video for up to 10 participants. Video/audio stay at
+the original site. Release packages embed the verified SyncWatch Cloudflare relay;
+users may choose their own. Existing server preferences are never replaced.
 
-## Команды
+## Commands
 
-Используется Node.js 24. После клонирования выполнить `npm ci` отдельно в `extension` и `server`.
+Use Node.js 24; run npm ci separately in extension/ and server/.
 
-- `cd extension && npm run verify`: TypeScript и все тесты, включая регрессии аудита.
-- `cd extension && npm run package`: verify, сборка Chrome, проверка версий и ZIP в dist/packages.
-- `cd server && npm run verify`: TypeScript, чистая логика, жизненный цикл Room и порядок команд.
-- `cd server && npm run dev`: локальный Worker (ws://localhost:8787).
-- `cd server && npm run deploy`: публикация, выполнять только в рамках явно поставленной задачи деплоя.
+- extension: npm run verify; npm run build; npm run test:browser.
+- extension: npm run package requires Info-ZIP and verifies versions/types/tests.
+- server: npm run verify; npm run dev for ws://localhost:8787.
+- server: npm run deploy only within an authorized deployment task.
 
-Актуальный план и результаты: docs/FIX-PLAN.md, docs/FIX-RESULTS.md. Исходный аудит 0.6.0 — исторический документ, не спецификация текущего кода.
+Read README.md, docs/LOCALIZATION.md, docs/SELF_HOST.md and docs/PUBLISHING.md.
+Historical audits are evidence about old revisions, not the current specification.
 
+## Architecture
 
-## Архитектура
+content/player.ts owns one active video per frame. Universal detection traverses
+open shadow roots; adapters.ts supports YouTube, jut.su, PlayerJS, Kodik and Alloha.
+Current real sites must be tested separately from fixtures.
 
-`content/player.ts` управляет одним активным video в каждом фрейме. Универсальный поиск проходит открытые shadow root; adapters.ts содержит YouTube/jut.su/PlayerJS/Kodik/Alloha. Сайт может менять DOM: реальные сайты нужно проверять отдельно от фикстур.
+background/state.ts owns sessions keyed by tabId: room, server, roster, active frame,
+mode and revision. Global preferences are defaults; never overwrite an active tab's
+room/server with another tab's defaults. persistence.ts stores intentions in
+storage.session across worker suspension; full browser restart clears that storage.
 
-`background/state.ts` — реестр сессий по tabId. Каждая вкладка имеет собственные room, serverUrl, roster, frameId, режим и ревизию. Глобальные настройки — значения по умолчанию и предпочтения; не заменять ими активную сессию другой вкладки.
+connection.ts owns connecting/joined/retrying/error/idle/disconnected phases.
+WebSocket open is not confirmed JOIN. Backoff resets after ROSTER. Full rooms and
+protocol failures must not retry forever. Old socket events cannot alter a newer
+session. Background owns reconnect; UI only displays state and explicit actions.
 
-`background/persistence.ts` сохраняет намерения сессий в storage.session и восстанавливает существующие вкладки после выгрузки worker. Перезапуск всего браузера не обязан восстанавливать комнаты: storage.session очищается браузером. Реконнектом владеет background, overlay только отображает состояние и отправляет явные действия.
+sync.ts relays ordered commands/snapshots. roster.ts aggregates all non-detached
+participants' buffer/ad holds and clears them on departure/disconnect/mode changes.
+The Room Durable Object requires JOIN within 10 seconds, limits frequency/size and
+removes stale clients with an independent alarm before checking capacity.
 
-`background/connection.ts` ведет транспорт и фазы connecting/joined/retrying/error/idle/disconnected. WebSocket open еще не подтверждает JOIN. Backoff сбрасывается после ROSTER; заполненная комната и нарушения протокола не вызывают бесконечных попыток. События старого сокета не должны менять новую сессию.
+## Synchronization invariants
 
+1. Server revisions and acknowledgements order STATE/NAV, including simultaneous
+   optimistic actions. Never order clients using their wall clocks. Server rewrites
+   sender and revision.
+2. Up to two participants share control; at three or more, host/controller manages
+   playback. Any participant can request pause; pauseOnly never changes time/speed.
+3. Desired playback is separate from technical holds. Finishing buffering or ads
+   cannot undo a manual pause or another participant's outstanding hold.
+4. Remote commands and drift correction do not echo. Snapshots restore time, pause
+   and base speed; temporary nudger speed is not a new base rate.
+5. Advertisements are not content timelines: do not apply or snapshot content STATE
+   against an ad. The latest state waits until the local ad ends.
+6. Block time commands on content mismatch or during navigation. Missing episode/
+   audio selection sets contentMismatch instead of seeking on the wrong content.
+7. Readiness is reported for each source, even with a reused video. video-ready
+   identifies its own frame and does not depend on presence event ordering.
+8. A directed snapshot retains its request revision; stale asynchronous reads must
+   not be promoted to a newer revision.
 
-`background/sync.ts` передает команды и снимки между content и сервером. `roster.ts` агрегирует ожидания всех не-detached участников, очищает их при уходе, отключении и смене режима.
+## UI and localization
 
-`server/room.ts` принимает до 10 соединений, требует JOIN за 10 секунд, исключает неприсоединившиеся сокеты из выборов host, ограничивает размеры/частоту сообщений. Независимый DO alarm и очистка перед проверкой вместимости удаляют устаревшие сокеты.
+The panel uses closed Shadow DOM. overlay-shell.ts manages tabs/appearance;
+shared/appearance.ts normalizes preferences; content/appearance.ts applies shared
+tokens to the panel, banners, bubbles and wheel. The mini launcher is 52px.
 
-## Инварианты синхронизации
+Language selection is en/ru/system, persisted through the existing background
+writer. Russian browser locales resolve to Russian; all others use English.
+Use shared/i18n.ts and its bundled catalog. Translate only application text;
+user names/chat/URLs/codes stay verbatim and are inserted as textContent.
+Only initial trusted template nodes are bound for in-place updates. Do not rebuild
+an active panel or clear drafts/unread state when language changes. Appearance
+reset preserves language and connection preferences. See docs/LOCALIZATION.md.
 
-1. Server назначает монотонную revision для STATE/NAV и подтверждает команды отправителю. Это необходимо для сходимости перекрестных оптимистических действий. Клиенты не определяют порядок по часам других машин. Сервер переписывает from/revision.
-2. ≤2 участника управляют симметрично; при ≥3 — host/назначенный controller. Любой может запросить паузу, но сервер помечает гостевую паузу pauseOnly: она не меняет позицию/скорость.
-3. Желаемое воспроизведение отдельно от технических ожиданий. Конец буфера/рекламы не отменяет ручную паузу. Один завершивший ожидание участник не снимает ожидание остальных.
-4. Удаленные команды и локальная подстройка дрейфа не порождают эхо. Снимок восстанавливает позицию, паузу и базовую скорость; временную скорость nudger не выдавать за базовую.
-5. Собственная реклама не является таймлайном контента: не применять к ней STATE и не отдавать ее позицию в снимках. Последний STATE ожидает завершения рекламы.
-6. Команды времени не применять к несовпадающему контенту или во время смены страницы/серии. Ошибка выбора серии явно ставит contentMismatch, а не разрешает слепой seek по другой серии.
-7. Готовность присылается для каждого нового источника, даже если video-элемент переиспользован. video-ready сам идентифицирует frameId, не зависит от порядка presence/ready.
-8. Направленный снимок связан с ревизией запроса. Нельзя выдать старый асинхронный снимок за новую ревизию.
+fullscreen.ts is a MAIN-world document_start entry without extension API/session
+access. It redirects video/iframe fullscreen into an existing container during the
+original gesture and restores styles on exit. native-fullscreen.ts supplies the
+small mouse/keyboard-accessible button and accepts only a public locale event.
+content/ui.ts chooses the top document normally and active leaf frame in fullscreen.
+floating-layer.ts moves/restacks popover hosts; passive updates go to all frames,
+player commands to the active frame only. Respect system reduced motion.
 
-## Приглашения, навигация, приватность
+## Invitations, friends, chat and privacy
 
-Генерируемые коды `watch-<32 hex>` содержат 128 бит из crypto.getRandomValues и являются секретом доступа. Короткие ручные коды допустимы для открытых/self-host комнат, но не обеспечивают приватность. Отдельных аккаунтов, паролей, удаления участников и подтверждения входа хостом нет.
+Generated watch-<32 hex> room codes contain 128 random bits and are access secrets.
+Short manual codes are open/guessable. There are no accounts, passwords, host entry
+approval or participant removal. Invitation entry requires explicit confirmation
+of server/room; links cannot silently replace defaults in other tabs. Formats are
+video#syncwatch=...&s=..., marked /join#r=...&s=..., and /r/<code>.
 
-Вход по ссылке требует нажатия «Войти в комнату» с показом сервера и кода; ссылка не меняет глобальный сервер молча. Форматы: URL видео с #syncwatch=...&s=...; маркированная серверная /join#r=...&s=...; /r/<код>. UI доступен с иконки на обычной странице даже без видео. Связь с комнатой не означает, что каждый плеер уже начал смотреть одинаковый контент.
+Automatic navigation stays on the viewing origin; leaving it enables solo mode.
+New non-video pages are not broadcast. Strip known auth/tracking parameters and
+fragments while preserving content parameters; this is not universal secret detection.
 
-Автоматическая навигация ограничена origin сайта просмотра. Уход на другой сайт включает соло. Новая страница без video не рассылается: после окна загрузки включается соло. Из URL удаляются fragment и известные параметры авторизации/трекеров; параметры выбора контента сохраняются. Не считать это универсальным распознаванием всех секретных параметров сайта. Privacy должна честно описывать передачу URL, серии/озвучки, имени и кода через выбранный сервер.
+Chat is limited to 200 characters, one message/second across text/quick messages,
+and 50 messages in session memory. Failed sends preserve drafts and are not logged.
+Quick-message autopause sends pauseOnly, never an ad timeline; solo pause is local.
 
-## Обновления и выпуск
+Presence identity is a SHA-256 public P-256 key ID. Requests are signed with server,
+body, timestamp and nonce binding. The private key stays local. Separate friend
+invitation tokens last 7 days; new tokens replace old. Mutations/acks serialize to
+prevent lost writes or re-adding removed friends. Status TTL is 150 seconds;
+confirmations live until ack or 14 days. Server-visible access-list hashes do not
+hide the social graph from its operator. Disabling sharing revokes presence.
 
-`notifier.ts` не чаще раза в сутки читает /version выбранного сервера; UI дает ссылку на карточку текущего extension ID в Chrome Web Store. Последняя опубликованная версия сервера обновлений намеренно отделена от разрабатываемой версии расширения: повышать ее только после доступности сборки в Chrome Web Store. ZIP не публикуется автоматически. См. docs/PUBLISHING.md.
+Privacy must disclose URLs, content choices, room codes, names, chat, presence and
+server/Cloudflare processing. HTTPS/WSS is transport encryption, not end-to-end.
 
-Все обращения к API браузера — через shared/browser.ts (webextension-polyfill). TypeScript и тесты обязательны перед упаковкой; CI выполняет проверки расширения и сервера отдельными заданиями.
+## Releases
 
+All browser API access uses shared/browser.ts. Check types/tests before packaging;
+CI checks extension, server and real Chromium separately. Browser fixtures replace
+transport and do not establish installed-extension/live-site acceptance.
 
-`content/fullscreen.ts` — отдельный MAIN-world вход на document_start, без extension API/данных. Перенаправляет requestFullscreen для video/iframe на существующий контейнер в том же пользовательском жесте и восстанавливает стили при выходе. `content/ui.ts` выбирает один документ показа: верхний обычно, активный leaf-frame в fullscreen. `floating-layer.ts` переносит popover-host внутрь fullscreen-контейнера и упорядочивает панель/баннер/чат/колесо. Пассивные UI-сообщения направлять всем фреймам; команды плеера — активному frameId.
-
-`background/chat.ts`: текст до 200 символов и каталог фраз, один cooldown, ошибки отправки не попадают в лог. Автопауза колеса в комнате — STATE.pauseOnly: не передает таймлайн рекламы и не сбрасывает позицию/скорость. В соло пауза только локальная. Сервер ограничивает CHAT до 1/с. История 50 сообщений в памяти сессии, не постоянное хранилище.
-
-`background/friends.ts` и `server/presence.ts`: clientId = SHA-256 публичного P-256 ключа; запросы подписаны приватным ключом с привязкой к серверу/телу/времени и nonce. Приватный ключ остается на устройстве. Ссылка несет отдельный токен на 7 дней, не ключ владельца. Последовательные мутации friends/inbox и квитанции предотвращают потерю записей и повторное добавление удаленного друга. Presence TTL 150с, accept inbox 14 дней, удаление по DO alarm. Серверу доступны хеши списка доступа: не утверждать отсутствие обработки социального графа. Публикация 0.8.0 требует сервера 0.4.0 и обновления существующей карточки Chrome Web Store 0.6.0.
-
-
-Для нативных `<video controls>` добавлена компактная кнопка ⛶ слева сверху на видео: штатная кнопка Chrome обходит JavaScript-перехват, поэтому она заменена этой кнопкой. Вход и выход выполняются мышью; двойной клик по нативному video также использует контейнер. Чат/колесо открываются кнопкой, закрываются отменой или фоном; текст отправляется кнопкой «Отправить» либо Enter. MAIN-world код этой кнопки не имеет доступа к данным расширения. На собственные кнопки плееров действует общий fullscreen-перехват.
+Do not move old tags. Publish the reviewed ZIP and SHA256SUMS against the exact
+release source. Keep GitHub release, server deployment, store review and store
+availability distinct. The owner requested automatic store publication for 0.10.0.
+Update the server's published-version notifier only after a build is available in
+the Chrome Web Store; /version is advisory, Chrome handles extension updates.

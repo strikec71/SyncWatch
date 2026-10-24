@@ -10,6 +10,7 @@ export default defineConfig({
     },
   },
   test: {
+    setupFiles: ['tests/language-setup.ts'],
     environment: 'node',
     include: ['tests/**/*.test.ts'],
   },

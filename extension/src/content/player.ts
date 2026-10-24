@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Универсальный детект и управление плеером внутри одного фрейма.
 // Работает в каждом фрейме (all_frames); фрейм без <video> просто простаивает.
 
@@ -404,7 +405,7 @@ export class PlayerController {
     if (Date.now() - this.bufferStartedAt > MAX_BUFFER_HOLD_MS) {
       this.desiredPaused = true; this.setBuffering(false);
       this.isApplyingRemote = false; v.pause(); this.emit('pause');
-      browser.runtime.sendMessage({ kind: 'notice', text: 'Видео долго не загружается — просмотр приостановлен. Нажмите ▶ после загрузки.' }).catch(() => {});
+      browser.runtime.sendMessage({ kind: 'notice', text: tr('Видео долго не загружается — просмотр приостановлен. Нажмите ▶ после загрузки.') }).catch(() => {});
     } // страховка
   }
 
@@ -459,7 +460,7 @@ export class PlayerController {
     this.awaitingGesture = true;
     const msg: NoticeMsg = {
       kind: 'notice',
-      text: 'Автовоспроизведение заблокировано — кликните по странице или нажмите ▶',
+      text: tr('Автовоспроизведение заблокировано — кликните по странице или нажмите ▶'),
     };
     browser.runtime.sendMessage(msg).catch(() => { /* SW перезапускается */ });
     const retry = () => {

@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Радиальное колесо быстрых сообщений (chatwheel, Фаза 0.7.0). Открывается кнопкой 💬 в
 // шапке островка; top-layer popover по центру экрана (виден и в фуллскрине). 8 круглых
 // кнопок по кругу (эмодзи крупно + подпись), в центре ✕ «Отмена». Закрытие: ✕ / Esc /
@@ -9,6 +10,7 @@ import { showFloatingLayer, removeFloatingLayer } from './floating-layer';
 import { QUICK_MESSAGES } from '../shared/quick-messages';
 import { DEFAULT_APPEARANCE, type Appearance } from '../shared/appearance';
 import { applyAppearance, SURFACE_CSS } from './appearance';
+import { bindTemplateLanguage } from '../shared/i18n';
 
 const RADIUS = 110; // px — вынос кнопок от центра
 
@@ -17,6 +19,7 @@ export class ChatWheel {
   private host: HTMLDivElement | null = null;
   private shadow: ShadowRoot | null = null;
   private onKey: ((e: KeyboardEvent) => void) | null = null;
+  private stopLanguage: (() => void) | null = null;
 
   constructor(private readonly onPick: (code: string) => void) {}
   setAppearance(prefs: Appearance): void {
@@ -31,7 +34,7 @@ export class ChatWheel {
     const host = document.createElement('div');
     applyAppearance(host, this.prefs);
     host.setAttribute('role', 'dialog');
-    host.setAttribute('aria-label', 'Быстрые сообщения');
+    host.setAttribute('aria-label', tr('Быстрые сообщения'));
     host.setAttribute('popover', 'manual');
     // ВАЖНО: inset:auto ДО inset:0 — иначе шорткат inset конфликтует с офсетами (см. проектный инвариант).
     host.style.cssText =
@@ -40,6 +43,7 @@ export class ChatWheel {
       'max-width:none;max-height:none;overflow:visible;';
     const shadow = this.shadow = host.attachShadow({ mode: 'closed' });
     shadow.innerHTML = WHEEL_TEMPLATE;
+    this.stopLanguage = bindTemplateLanguage(shadow);
 
     const backdrop = shadow.querySelector('.backdrop') as HTMLElement;
     backdrop.addEventListener('pointerdown', () => this.close());
@@ -79,6 +83,7 @@ export class ChatWheel {
   }
 
   close(): void {
+    this.stopLanguage?.(); this.stopLanguage = null;
     if (this.onKey) { document.removeEventListener('keydown', this.onKey, true); this.onKey = null; }
     const host = this.host as (HTMLElement & { hidePopover?: () => void }) | null;
     if (host) { removeFloatingLayer(host); host.remove(); }

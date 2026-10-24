@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 import { DEFAULT_APPEARANCE, normalizeAppearance, type Appearance } from '../shared/appearance';
 import { saveSettings } from '../shared/settings';
 import { applyAppearance } from './appearance';
@@ -49,7 +50,7 @@ export class OverlayShell {
   }
   private async save(patch: Partial<Appearance>): Promise<void> {
     try { const saved = await saveSettings(patch); this.update(saved); }
-    catch { this.hint('Не удалось сохранить оформление. Повторите изменение.'); }
+    catch { this.hint(tr('Не удалось сохранить оформление. Повторите изменение.')); }
   }
   private paint(): void {
     applyAppearance(this.host, this.prefs);

@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Сайт-специфичные оверрайды детекта плеера (Фаза 3).
 // Универсальная эвристика в player.ts покрывает большинство сайтов; адаптеры нужны там,
 // где несколько <video> сбивают выбор, плеер в shadow DOM или его надо взять по селектору.
@@ -116,7 +117,7 @@ function kodikHuman(doc: Document): string {
     title('.serial-series-box'),
     title('.serial-translations-box') ?? title('.movie-translations-box'),
   ].filter(Boolean);
-  return bits.join(' · ') || 'серия';
+  return bits.join(' · ') || tr('серия');
 }
 
 /** Выставить <select> на значение и дёрнуть родной обработчик Kodik (nativeChange). */
@@ -230,7 +231,7 @@ function allohaHuman(doc: Document): string {
     text('[data-select^="episode"]'),
     text('[data-select^="translation"]'),
   ].filter(Boolean);
-  return bits.join(' · ') || 'серия';
+  return bits.join(' · ') || tr('серия');
 }
 
 /** Нативный клик по пункту с фолбэком полной последовательностью: делегированный хендлер

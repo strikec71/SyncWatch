@@ -1,9 +1,11 @@
+import { tr } from './i18n';
 // Обёртка над browser.storage.local для пользовательских настроек.
 
 import browser from './browser';
 import { publicKeyId, publicKeyShape, type SigningIdentity } from './identity';
 import { normalizeServerUrl } from './validation';
 import { DEFAULT_APPEARANCE, normalizeAppearance, type Appearance } from './appearance';
+import { normalizeLanguage, setLanguage, type LanguagePreference } from './i18n';
 
 // The release build embeds the endpoint only after the deployment passes its
 // health/WebSocket checks. Local source builds may use a manually chosen relay.
@@ -11,6 +13,8 @@ declare const __SYNCWATCH_SERVER_URL__: string;
 const bundledServer = typeof __SYNCWATCH_SERVER_URL__ === 'string' ? __SYNCWATCH_SERVER_URL__ : '';
 
 export interface Settings extends Appearance {
+  /** Global display language; system resolves Russian, otherwise English. */
+  language: LanguagePreference;
   /** Базовый URL сервера, например wss://syncwatch-signal.<subdomain>.workers.dev */
   serverUrl: string;
   /** Код комнаты — общий секрет на двоих. */
@@ -29,6 +33,7 @@ export interface Settings extends Appearance {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  language: 'system',
   ...DEFAULT_APPEARANCE,
   serverUrl: normalizeServerUrl(bundledServer) || '',
   room: '',
@@ -63,7 +68,10 @@ export async function ensureDeviceName(): Promise<string> {
 export async function loadSettings(): Promise<Settings> {
   const stored = await browser.storage.local.get('settings');
   const raw = (stored.settings && typeof stored.settings === 'object' ? stored.settings : {}) as Partial<Settings>;
+  const language = normalizeLanguage(raw.language);
+  setLanguage(language);
   return {
+    language,
     ...normalizeAppearance(raw),
     serverUrl: typeof raw.serverUrl === 'string' ? normalizeServerUrl(raw.serverUrl) || '' : DEFAULT_SETTINGS.serverUrl,
     room: typeof raw.room === 'string' ? raw.room.slice(0, 128) : '',
@@ -83,11 +91,12 @@ export function updateSettings(patch: SettingsPatch): Promise<Settings> {
   const operation = writeQueue.catch(() => {}).then(async () => {
     const current = await loadSettings();
     const next = { ...current };
+    if ('language' in patch) next.language = normalizeLanguage(patch.language);
     Object.assign(next, normalizeAppearance({ ...current, ...patch }));
     if (typeof patch.room === 'string') next.room = patch.room.slice(0, 128);
     if (typeof patch.serverUrl === 'string') {
       const server = patch.serverUrl ? normalizeServerUrl(patch.serverUrl) : '';
-      if (server === null) throw new Error('Нужен wss:// адрес сервера (ws:// разрешен для localhost)');
+      if (server === null) throw new Error(tr('Нужен wss:// адрес сервера (ws:// разрешен для localhost)'));
       next.serverUrl = server;
     }
     if (typeof patch.deviceName === 'string') next.deviceName = patch.deviceName.trim().slice(0, 64);
@@ -96,6 +105,7 @@ export function updateSettings(patch: SettingsPatch): Promise<Settings> {
     if (typeof patch.sharePresence === 'boolean') next.sharePresence = patch.sharePresence;
     if (typeof patch.driftThreshold === 'number' && Number.isFinite(patch.driftThreshold)) next.driftThreshold = Math.max(0.25, Math.min(10, patch.driftThreshold));
     await browser.storage.local.set({ settings: next });
+    setLanguage(next.language);
     return next;
   });
   writeQueue = operation;
@@ -105,7 +115,7 @@ export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
   // Content documents all delegate writes to the single background queue.
   if (!backgroundWriter && typeof document !== 'undefined') {
     const result = await browser.runtime.sendMessage({ kind: 'save-settings', patch }) as { settings?: Settings; error?: string };
-    if (!result?.settings) throw new Error(result?.error || 'Не удалось сохранить настройки');
+    if (!result?.settings) throw new Error(result?.error || tr('Не удалось сохранить настройки'));
     return result.settings;
   }
   return updateSettings(patch);

@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Чат / быстрые сообщения хаба (Фаза 0.7.0). Ядро — чистые функции (кулдаун, кап лога);
 // сессионные обработчики шлют CHAT в сеть, кладут запись в лог сессии и пушат её островку.
 //
@@ -47,7 +48,7 @@ function pushChat(s: Session, entry: ChatEntry): void {
 export type ChatResult = { ok: boolean; error?: string };
 export function onSendQuickMessage(s: Session, code: string): ChatResult {
   const qm = quickMessageByCode(code);
-  if (!qm) return { ok: false, error: 'Неизвестная фраза' };
+  if (!qm) return { ok: false, error: tr('Неизвестная фраза') };
   const result = sendChat(s, { code });
   if (result.ok && qm.autoPause) {
     if (s.detached) sendToActiveFrame(s, { kind: 'pause-local' });
@@ -61,17 +62,17 @@ export function onSendQuickMessage(s: Session, code: string): ChatResult {
   return result;
 }
 export function onSendTextMessage(s: Session, raw: string): ChatResult {
-  if (typeof raw !== 'string' || raw.length > CHAT_TEXT_MAX || !raw.trim()) return { ok: false, error: 'Введите от 1 до 200 символов' };
+  if (typeof raw !== 'string' || raw.length > CHAT_TEXT_MAX || !raw.trim()) return { ok: false, error: tr('Введите от 1 до 200 символов') };
   return sendChat(s, { text: raw.trim() });
 }
 function sendChat(s: Session, payload: { code?: string; text?: string }): ChatResult {
-  if (!s.connected) return { ok: false, error: 'Подключитесь к комнате' };
+  if (!s.connected) return { ok: false, error: tr('Подключитесь к комнате') };
   const now = Date.now();
-  if (!canSendChat(s.lastChatSentAt, now, CHAT_COOLDOWN_MS)) return { ok: false, error: 'Подождите секунду перед следующим сообщением' };
-  if (!sendWire(s, { type: 'CHAT', ...payload, ts: now })) return { ok: false, error: 'Соединение прервано — повторите отправку' };
+  if (!canSendChat(s.lastChatSentAt, now, CHAT_COOLDOWN_MS)) return { ok: false, error: tr('Подождите секунду перед следующим сообщением') };
+  if (!sendWire(s, { type: 'CHAT', ...payload, ts: now })) return { ok: false, error: tr('Соединение прервано — повторите отправку') };
   s.lastChatSentAt = now;
   noteActivity(s);
-  pushChat(s, { ...payload, name: s.deviceName || 'Вы', self: true, ts: now });
+  pushChat(s, { ...payload, name: s.deviceName || tr('Вы'), self: true, ts: now });
   return { ok: true };
 }
 

@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Центральный статус-баннер (Фаза 7) — документ показа, выбранный ContentUI.
 // Дышащая плашка по центру, отражающая текущее блокирующее состояние от партнёра
 // (пауза / буфер / реклама со счётом вверх). Состояние считает background и пушит
@@ -19,14 +20,14 @@ export class StatusBanner {
   private textEl: HTMLElement | null = null;
   private state: BannerState = 'none';
   private since = 0;
-  private name = 'Партнёр';
+  private name = tr('Партнёр');
   private tick: number | null = null;
 
   /** Применить состояние от хаба. */
   apply(msg: BannerMsg): void {
     this.state = msg.state;
     this.since = msg.since;
-    this.name = msg.name || 'Партнёр';
+    this.name = msg.name || tr('Партнёр');
 
     if (msg.state === 'none') { this.hide(); return; }
 
@@ -43,14 +44,14 @@ export class StatusBanner {
     const who = this.name;
     switch (this.state) {
       case 'peer-paused':
-        this.textEl.textContent = `${who} на паузе`;
+        this.textEl.textContent = tr`${who} на паузе`;
         break;
       case 'peer-buffer':
-        this.textEl.textContent = `${who} догружает видео…`;
+        this.textEl.textContent = tr`${who} догружает видео…`;
         break;
       case 'peer-ad': {
         const sec = Math.max(0, Math.floor((Date.now() - this.since) / 1000));
-        this.textEl.textContent = `Реклама у партнёра · ${fmt(sec)}`;
+        this.textEl.textContent = tr`Реклама у партнёра · ${fmt(sec)}`;
         break;
       }
     }

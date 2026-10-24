@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Чат-поверхность островка (Фаза 0.7.0). Вынесена из overlay.ts, чтобы держать оба файла
 // < 500 строк. Отвечает за: кнопку 💬 в шапке + радиальное колесо (chatwheel), лог сообщений
 // в секции «Чат», бейдж непрочитанных и disabled-состояние вне подключения.
@@ -38,6 +39,14 @@ export class OverlayChat {
   private loading = false;
   private draftTouched = false;
   private pending: ChatEntry[] = [];
+  private rows = new Map<HTMLElement, ChatEntry>();
+  refreshLanguage(): void {
+    this.wheel.close();
+    for (const [row, entry] of this.rows) {
+      row.querySelector('.chat-meta')!.textContent = `${entry.self ? tr('вы') : entry.name} · ${fmtClock(entry.ts)}`;
+      row.querySelector('.chat-text')!.textContent = renderContent(entry);
+    }
+  }
 
   constructor(
     private shadow: ShadowRoot,
@@ -61,7 +70,7 @@ export class OverlayChat {
   private $(id: string): HTMLElement { return this.shadow.getElementById(id)!; }
 
   private toggleWheel(): void {
-    if (!this.connected) { this.hint('Подключитесь, чтобы отправлять сообщения'); return; }
+    if (!this.connected) { this.hint(tr('Подключитесь, чтобы отправлять сообщения')); return; }
     if (this.wheel.isOpen) this.wheel.close();
     else this.wheel.open();
   }
@@ -73,7 +82,7 @@ export class OverlayChat {
   private async sendText(): Promise<void> {
     const input = this.$('chatinput') as HTMLInputElement;
     const text = input.value;
-    if (!text.trim() || text.length > 200) { this.hint('Введите от 1 до 200 символов'); return; }
+    if (!text.trim() || text.length > 200) { this.hint(tr('Введите от 1 до 200 символов')); return; }
     if (await this.send({ kind: 'send-text-message', text }) && input.value === text) { input.value = ''; this.saveDraft(); this.updateCount(); }
   }
   private saveDraft(): void {
@@ -81,15 +90,15 @@ export class OverlayChat {
     void browser.runtime.sendMessage({kind:'set-chat-draft',text}).catch(() => {});
   }
   private async send(message: { kind: 'send-quick-message'; code: string } | { kind: 'send-text-message'; text: string }): Promise<boolean> {
-    if (this.sending || Date.now() < this.cooldownUntil) { this.hint('Подождите секунду перед следующим сообщением'); return false; }
+    if (this.sending || Date.now() < this.cooldownUntil) { this.hint(tr('Подождите секунду перед следующим сообщением')); return false; }
     this.sending = true;
     try {
       const response = await browser.runtime.sendMessage(message) as { ok?: boolean; error?: string } | undefined;
       if (this.destroyed) return false;
-      if (!response?.ok) { this.hint(response?.error || 'Не удалось отправить сообщение'); return false; }
+      if (!response?.ok) { this.hint(response?.error || tr('Не удалось отправить сообщение')); return false; }
       this.cooldownUntil = Date.now() + CHAT_COOLDOWN_MS;
       return true;
-    } catch { if (!this.destroyed) this.hint('Соединение прервано — повторите отправку'); return false; }
+    } catch { if (!this.destroyed) this.hint(tr('Соединение прервано — повторите отправку')); return false; }
     finally { this.sending = false; }
   }
 
@@ -128,13 +137,14 @@ export class OverlayChat {
     if (!content) return;
     const row = document.createElement('div');
     row.className = 'crow' + (entry.self ? ' self' : '');
-    const who = entry.self ? 'вы' : entry.name;
+    const who = entry.self ? tr('вы') : entry.name;
     const meta = document.createElement('span'); meta.className = 'chat-meta';
     meta.textContent = `${who} · ${fmtClock(entry.ts)}`;
     const body = document.createElement('span'); body.className = 'chat-text'; body.textContent = content;
     row.append(meta, body); // untrusted names and content remain text, never HTML
     log.appendChild(row);
-    while (log.childElementCount > CHAT_LOG_MAX) log.firstElementChild?.remove();
+    this.rows.set(row, entry);
+    while (log.childElementCount > CHAT_LOG_MAX) { this.rows.delete(log.firstElementChild as HTMLElement); log.firstElementChild?.remove(); }
     log.scrollTop = log.scrollHeight; // автоскролл к последнему
   }
 
@@ -146,7 +156,7 @@ export class OverlayChat {
     (this.$('chatinput') as HTMLInputElement).disabled = !this.connected;
     (this.$('chatsend') as HTMLButtonElement).disabled = !this.connected;
     btn.classList.toggle('disabled', !this.connected);
-    btn.title = this.connected ? 'Быстрые сообщения' : 'Подключитесь, чтобы отправлять сообщения';
+    btn.title = this.connected ? tr('Быстрые сообщения') : tr('Подключитесь, чтобы отправлять сообщения');
     if (!this.connected) this.wheel.close();
   }
 
@@ -172,6 +182,7 @@ export class OverlayChat {
   }
 
   destroy(): void {
+    this.rows.clear();
     this.destroyed = true; this.pending = [];
     this.wheel.close();
   }
