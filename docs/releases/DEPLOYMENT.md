@@ -30,10 +30,12 @@ It requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in repository Actions
 secrets, and may require production-environment approval if configured by the owner.
 The token should be limited to the appropriate Cloudflare account/Workers scope.
 
-Do not accidentally invoke this deployment workflow for a separately prepared
-manual release. It currently listens to version-tag pushes. Release creation via
-GitHub's API can create the tag without a normal git push trigger; document which
-path was used. If using a normal pushed tag, provision its dependencies first.
+Creating a version tag through the GitHub Release API also triggers the tag-push
+workflow. For 0.10.0 this legacy run stopped at missing Cloudflare Actions secrets;
+the authorized local deployment and public release were verified separately.
+Do not infer a failed production deployment from that credential check, or claim
+that local OAuth configures CI. Configure durable CI credentials in a separate
+authorized setup task before relying on this automated path.
 
 ## Version notifier
 
