@@ -62,7 +62,7 @@ try{
  await deliver({kind:'banner',state:'peer-paused',name:'Viewer',since:0});
  await deliver({kind:'chat',entry:{code:'lol',name:'Viewer',self:false,ts:Date.now()}});
  for(const mode of ['container','video','native','iframe']){
-  if(mode==='iframe'){await click(page.mainFrame(),'#chatbox > summary');await fill(page.mainFrame(),'Черновик между фреймами');await click(page.mainFrame(),'#chatbox > summary');}
+  if(mode==='iframe'){await click(page.mainFrame(),'#tab-chat');await fill(page.mainFrame(),'Черновик между фреймами');await click(page.mainFrame(),'#tab-room');}
   if(mode==='iframe')await page.frameLocator('iframe').locator('#frame-fullscreen').click();else if(mode==='native')await page.locator('[data-syncwatch-native-fullscreen]').click();else await page.locator('#'+mode).click();
   const view=mode==='iframe'?page.frames().find(f=>f.url().includes(':8806')):page.mainFrame();
   await view.waitForFunction(()=>!!window.ui.overlay?.host?.matches(':popover-open'));
@@ -96,7 +96,7 @@ try{
   record(mode+': incoming text bubble stays above fullscreen and escapes HTML',bubble,bubble.above&&!bubble.injected&&bubble.text.includes('<img'));
   await click(view,'#chat-open');await page.waitForTimeout(350);await click(view,'.center');
   record(mode+': wheel opens and closes entirely with the mouse',await view.evaluate(()=>window.ui.overlay.chat.wheel.isOpen===false),await view.evaluate(()=>window.ui.overlay.chat.wheel.isOpen===false));
-  await click(view,'#chatbox > summary');
+  await click(view,'#tab-chat');
   if(mode==='iframe')record('iframe: unsent draft follows the active UI',await inputValue(view),await inputValue(view)==='Черновик между фреймами');
   await fill(view,'Текстовый чат в fullscreen');
   await view.waitForFunction(()=>!window.ui.overlay.chat.sending&&Date.now()>=window.ui.overlay.chat.cooldownUntil);
@@ -104,7 +104,7 @@ try{
   if(mode==='native')await click(view,'#chatsend');else await page.keyboard.press('Enter');
   await view.waitForFunction(count=>window.sent.length===count+1&&window.sent.at(-1)?.kind==='send-text-message'&&window.ui.overlay.shadow.querySelector('#chatinput').value==='',textCount);
   record(mode+(mode==='native'?': text sends by mouse button and clears only on success':': text sends with Enter and clears only on success'),await view.evaluate(()=>({message:window.sent.at(-1),value:window.ui.overlay.shadow.querySelector('#chatinput').value})),await inputValue(view)==='');
-  await click(view,'#chatbox > summary');
+  await click(view,'#tab-room');
   await click(view,'#room');
   if(mode!=='iframe'){
    await view.evaluate(()=>document.querySelector('#sitePopover').showPopover());await page.waitForTimeout(100);
@@ -120,7 +120,7 @@ try{
  record('mouse fullscreen replacement has no page-accessible shadow root',await page.evaluate(()=>document.querySelector('[data-syncwatch-native-fullscreen]').shadowRoot===null),await page.evaluate(()=>document.querySelector('[data-syncwatch-native-fullscreen]').shadowRoot===null));
  const restored=await page.evaluate(()=>({video:document.querySelector('video').getAttribute('style'),player:document.querySelector('#player').getAttribute('style')}));
  record('exit restores native target/container styles',restored,!restored.video&&!restored.player);
- await click(page.mainFrame(),'#chatbox > summary');await page.waitForTimeout(1000);
+ await click(page.mainFrame(),'#tab-chat');await page.waitForTimeout(1000);
  await page.evaluate(()=>window.rejectSend=true);await fill(page.mainFrame(),'Не потерять черновик');await click(page.mainFrame(),'#chatsend');
  record('failed send preserves draft and displays error',await inputValue(page.mainFrame()),await inputValue(page.mainFrame())==='Не потерять черновик');
  await page.evaluate(()=>window.ui.overlay.setVideoAvailable(false));

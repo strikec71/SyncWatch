@@ -3,13 +3,14 @@
 import browser from './browser';
 import { publicKeyId, publicKeyShape, type SigningIdentity } from './identity';
 import { normalizeServerUrl } from './validation';
+import { DEFAULT_APPEARANCE, normalizeAppearance, type Appearance } from './appearance';
 
 // The release build embeds the endpoint only after the deployment passes its
 // health/WebSocket checks. Local source builds may use a manually chosen relay.
 declare const __SYNCWATCH_SERVER_URL__: string;
 const bundledServer = typeof __SYNCWATCH_SERVER_URL__ === 'string' ? __SYNCWATCH_SERVER_URL__ : '';
 
-export interface Settings {
+export interface Settings extends Appearance {
   /** Базовый URL сервера, например wss://syncwatch-signal.<subdomain>.workers.dev */
   serverUrl: string;
   /** Код комнаты — общий секрет на двоих. */
@@ -28,6 +29,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  ...DEFAULT_APPEARANCE,
   serverUrl: normalizeServerUrl(bundledServer) || '',
   room: '',
   driftThreshold: 2.0,
@@ -62,6 +64,7 @@ export async function loadSettings(): Promise<Settings> {
   const stored = await browser.storage.local.get('settings');
   const raw = (stored.settings && typeof stored.settings === 'object' ? stored.settings : {}) as Partial<Settings>;
   return {
+    ...normalizeAppearance(raw),
     serverUrl: typeof raw.serverUrl === 'string' ? normalizeServerUrl(raw.serverUrl) || '' : DEFAULT_SETTINGS.serverUrl,
     room: typeof raw.room === 'string' ? raw.room.slice(0, 128) : '',
     deviceName: typeof raw.deviceName === 'string' ? raw.deviceName.slice(0, 64) : '',
@@ -80,6 +83,7 @@ export function updateSettings(patch: SettingsPatch): Promise<Settings> {
   const operation = writeQueue.catch(() => {}).then(async () => {
     const current = await loadSettings();
     const next = { ...current };
+    Object.assign(next, normalizeAppearance({ ...current, ...patch }));
     if (typeof patch.room === 'string') next.room = patch.room.slice(0, 128);
     if (typeof patch.serverUrl === 'string') {
       const server = patch.serverUrl ? normalizeServerUrl(patch.serverUrl) : '';

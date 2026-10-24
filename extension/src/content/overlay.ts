@@ -17,6 +17,7 @@ import { friendlyCode, decideRowControls, detachButton, buildRosterRow, peersLab
 import { TEMPLATE } from './overlay-template';
 import { OverlayChat } from './overlay-chat';
 import { FriendsPanel } from './overlay-friends';
+import { OverlayShell } from './overlay-shell';
 
 const COLLAPSED_KEY = 'syncwatch-overlay-collapsed';
 const POLL_MS = 2000;
@@ -31,6 +32,7 @@ export class Overlay {
   private onStorage: Parameters<typeof browser.storage.onChanged.addListener>[0] | null = null;
   private chat: OverlayChat | null = null;         // чат-поверхность (кнопка 💬 + колесо + лог)
   private friends: FriendsPanel | null = null;     // раздел «Друзья» (presence, приглашения)
+  private shell: OverlayShell | null = null;
   private videoAvailable = false;                  // есть ли видео на вкладке (подсказка компактного режима)
   private userExpandedCompact = false;             // пользователь развернул пилюлю вручную (тап по шапке)
 
@@ -120,10 +122,14 @@ export class Overlay {
       this.syncField('auto', next.autoConnect);
       this.syncField('share-presence', next.sharePresence);
       if (next.deviceName) { this.myName = next.deviceName; this.syncField('dev', next.deviceName); }
+      this.shell?.update(next);
     };
     browser.storage.onChanged.addListener(this.onStorage);
 
     this.$('m').addEventListener('click', () => this.toggleCollapsed());
+    this.$('launcher').addEventListener('click', () => {
+      if (!this.expandIfCompact()) this.toggleCollapsed();
+    });
     this.enableDrag(host, this.$('h'));
     let collapsed = false;
     try { collapsed = localStorage.getItem(COLLAPSED_KEY) === '1'; } catch { /* ignore */ }
@@ -134,6 +140,7 @@ export class Overlay {
     (this.$('update') as HTMLAnchorElement).href = `https://chromewebstore.google.com/detail/${browser.runtime.id}`;
     this.chat = new OverlayChat(this.shadow, (t) => this.hint(t));
     this.chat.loadLog();
+    this.shell = new OverlayShell(this.shadow, host, s, () => this.chat?.resetUnreadIfVisible(), prefs => this.chat?.setAppearance(prefs), t => this.hint(t));
 
     // Раздел «Друзья» (presence, приглашения) — глобальные данные, приходят через
     // friends-status в onPush; список запрашиваем сразу.
@@ -167,12 +174,14 @@ export class Overlay {
     const auto = !this.videoAvailable && !this.last?.connected; // «по смыслу свёрнуто в пилюлю»
     if (!auto) this.userExpandedCompact = false;                // видео/подключение — пилюля не нужна
     panel.classList.toggle('compact', auto && !this.userExpandedCompact);
+    this.updateLauncher();
   }
 
   /** Тап по шапке в режиме пилюли — развернуть (не тащить). Возвращает true, если сработало. */
   private expandIfCompact(): boolean {
     if (!this.shadow?.querySelector('.panel')?.classList.contains('compact')) return false;
     this.userExpandedCompact = true;
+    this.applyCollapsed(false);
     this.recomputeCompact();
     return true;
   }
@@ -195,6 +204,7 @@ export class Overlay {
 
   /** Снять островок (когда overlayEnabled выключен тумблером на иконке). */
   unmount(): void {
+    this.shell?.destroy(); this.shell = null;
     this.chat?.destroy(); this.chat = null;
     this.friends = null; // без глобальных слушателей/таймеров — уходит вместе с shadow
     this.mounted = false;
@@ -285,9 +295,22 @@ export class Overlay {
   private applyCollapsed(collapsed: boolean): void {
     this.shadow!.querySelector('.panel')!.classList.toggle('collapsed', collapsed);
     const btn = this.$('m');
-    btn.textContent = collapsed ? '▸' : '▾';
     btn.title = collapsed ? 'Развернуть' : 'Свернуть';
+    this.updateLauncher();
+    this.shell?.keepInView();
+    if (collapsed) this.$('launcher').focus({ preventScroll: true });
     if (!collapsed) this.chat?.resetUnreadIfVisible(); // разворот панели = чат прочитан
+  }
+
+  private updateLauncher(): void {
+    if (!this.shadow) return;
+    const panel = this.shadow.querySelector('.panel')!;
+    const small = panel.classList.contains('collapsed') || panel.classList.contains('compact');
+    const launcher = this.$('launcher');
+    const label = small ? 'Открыть SyncWatch' : 'Свернуть SyncWatch';
+    launcher.setAttribute('aria-expanded', String(!small));
+    launcher.setAttribute('aria-label', label); launcher.title = label;
+    this.$('panel-body').toggleAttribute('inert', small);
   }
 
   /** Отправить connect с комнатой ЭТОЙ вкладки (room per-tab едет в сообщении).
@@ -333,16 +356,22 @@ export class Overlay {
 
     let dot = 'off';
     let text = 'Не подключено';
-    if (st?.connected && st.peerPresent) { dot = 'on'; text = `«${st.room}» · ${peersLabel(st.peers.length)}`; }
-    else if (st?.connected) { dot = 'wait'; text = `«${st.room}» · ожидаем участников…`; }
-    if (st?.phase === 'connecting') text = 'Подключаемся…';
-    if (st?.phase === 'retrying') text = 'Связь потеряна — повторяем подключение…';
-    if (st?.error) text = st.error;
-    if (st?.contentMismatch) text = 'Контент не совпадает — выберите серию комнаты или включите соло';
+    if (st?.connected && st.peerPresent) { dot = 'on'; text = 'Синхрон включён · смотрим вместе'; }
+    else if (st?.connected) { dot = 'wait'; text = 'Вы в комнате · ждём друзей'; }
+    if (st?.detached) { dot = 'wait'; text = 'Режим соло · смотрите в своём темпе'; }
+    if (st?.phase === 'connecting') { dot = 'wait'; text = 'Подключаемся…'; }
+    if (st?.phase === 'retrying') { dot = 'wait'; text = 'Связь потеряна — повторяем подключение…'; }
+    if (st?.error) { dot = 'wait'; text = st.error; }
+    if (st?.contentMismatch) { dot = 'wait'; text = 'Контент не совпадает — выберите серию комнаты или включите соло'; }
 
     this.$('dot').setAttribute('data-state', dot);
+    this.$('launcher-dot').setAttribute('data-state', dot);
     this.$('sync').setAttribute('data-state', dot);   // сигнатурная линия связи
     this.$('s').textContent = text;
+    this.$('session-title').textContent = connected ? 'Хорошая компания' : 'Ваша комната';
+    this.$('participant-count').textContent = connected ? `${peersLabel(st!.peers.length)} / 10` : 'До 10 участников';
+    this.$('session-role').textContent = connected ? (st?.amHost ? 'Вы — хост' : st?.amController ? 'Есть управление' : 'Вы — зритель') : 'Без аккаунта';
+    this.$('room-role-hint').textContent = connected ? (st!.peers.length <= 2 ? 'Управление общее' : 'Управляет хост / контроллер') : 'Один контент у всех';
 
     this.renderRoster(st);
     this.renderMode(st);
@@ -357,7 +386,7 @@ export class Overlay {
     if (!st?.connected || peers.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'prow empty';
-      empty.textContent = 'ожидаем…';
+      empty.textContent = st?.connected ? 'Пока вы здесь одни. Пригласите друга по ссылке.' : 'Откройте одно видео с друзьями и подключитесь к комнате.';
       box.appendChild(empty);
       return;
     }

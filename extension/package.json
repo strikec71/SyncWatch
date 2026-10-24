@@ -1,6 +1,6 @@
 {
   "name": "syncwatch-extension",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
     "test": "vitest run",
     "package": "npm run verify && npm run build && node scripts/package.mjs",
     "verify": "npm run typecheck && npm test",
-    "test:browser": "node ../docs/audit/fullscreen-check.mjs"
+    "test:browser": "node ../docs/audit/fullscreen-check.mjs && node ../docs/audit/design-check.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.270",

@@ -7,6 +7,7 @@ import type { RuntimeMessage, BannerMsg, ChatEntry } from '../shared/messages';
 import { StatusBanner } from './banner';
 import { ChatBubbles } from './chat-bubbles';
 import { Overlay } from './overlay';
+import { DEFAULT_APPEARANCE, normalizeAppearance, type Appearance } from '../shared/appearance';
 export function presentationDocument(): boolean {
   let fs = document.fullscreenElement;
   while (fs?.shadowRoot?.fullscreenElement) fs = fs.shadowRoot.fullscreenElement;
@@ -14,6 +15,11 @@ export function presentationDocument(): boolean {
   return window.top === window || !!fs;
 }
 export class ContentUI {
+  private appearance: Appearance = DEFAULT_APPEARANCE;
+  private updateAppearance(settings: Partial<Appearance>): void {
+    this.appearance = normalizeAppearance(settings);
+    this.banner.setAppearance(this.appearance); this.bubbles.setAppearance(this.appearance);
+  }
   private banner = new StatusBanner();
   private bubbles = new ChatBubbles();
   private overlay: Overlay | null = null;
@@ -25,10 +31,11 @@ export class ContentUI {
   constructor() {
     document.addEventListener('fullscreenchange', () => this.reconcile());
     browser.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && changes.settings) { this.enabled = changes.settings.newValue?.overlayEnabled ?? true; this.reconcile(); }
+      if (area === 'local' && changes.settings) { this.enabled = changes.settings.newValue?.overlayEnabled ?? true; this.updateAppearance(changes.settings.newValue ?? {}); this.reconcile(); }
     });
     browser.runtime.onMessage.addListener((msg: RuntimeMessage) => this.onMessage(msg));
-    void loadSettings().then(settings => { this.enabled = settings.overlayEnabled; this.reconcile(); });
+    void loadSettings().then(settings => { this.enabled = settings.overlayEnabled; this.updateAppearance(settings); this.reconcile(); });
+    matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => this.updateAppearance(this.appearance));
     void browser.runtime.sendMessage({kind:'query-video'}).then(r => { this.videoAvailable = !!r?.available; this.reconcile(); }).catch(() => {});
   }
   private reconcile(): void {

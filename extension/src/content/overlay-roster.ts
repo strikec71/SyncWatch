@@ -109,7 +109,7 @@ export function buildRosterRow(
 
   if (ctl.showGrant) {
     row.appendChild(rowBtn(
-      ctl.grantActive ? 'Забрать управление' : 'Передать управление',
+      ctl.grantActive ? 'Забрать' : 'Передать',
       ctl.grantActive ? 'забрать управление' : 'выдать управление',
       ctl.grantActive,
       () => cb.onGrantToggle(peer.id, !ctl.grantActive),
@@ -132,6 +132,7 @@ function rowBtn(text: string, title: string, active: boolean, onClick: () => voi
   b.type = 'button';
   b.className = 'btn micro' + (active ? ' on' : '');
   b.textContent = text;
+  b.setAttribute('aria-label', title);
   b.title = title;
   b.addEventListener('click', onClick);
   return b;

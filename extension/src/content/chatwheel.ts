@@ -7,21 +7,31 @@
 
 import { showFloatingLayer, removeFloatingLayer } from './floating-layer';
 import { QUICK_MESSAGES } from '../shared/quick-messages';
+import { DEFAULT_APPEARANCE, type Appearance } from '../shared/appearance';
+import { applyAppearance, SURFACE_CSS } from './appearance';
 
 const RADIUS = 110; // px — вынос кнопок от центра
 
 export class ChatWheel {
+  private prefs: Appearance = DEFAULT_APPEARANCE;
   private host: HTMLDivElement | null = null;
   private shadow: ShadowRoot | null = null;
   private onKey: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(private readonly onPick: (code: string) => void) {}
+  setAppearance(prefs: Appearance): void {
+    this.prefs = prefs;
+    if (this.host) applyAppearance(this.host, prefs);
+  }
 
   get isOpen(): boolean { return this.host != null; }
 
   open(): void {
     if (this.host) return;
     const host = document.createElement('div');
+    applyAppearance(host, this.prefs);
+    host.setAttribute('role', 'dialog');
+    host.setAttribute('aria-label', 'Быстрые сообщения');
     host.setAttribute('popover', 'manual');
     // ВАЖНО: inset:auto ДО inset:0 — иначе шорткат inset конфликтует с офсетами (см. проектный инвариант).
     host.style.cssText =
@@ -43,6 +53,7 @@ export class ChatWheel {
       // rotate → translate → rotate(-) держит кнопку «прямой» на окружности.
       btn.style.transform = `rotate(${angle}deg) translate(${RADIUS}px) rotate(${-angle}deg)`;
       btn.title = m.text;
+      btn.setAttribute('aria-label', m.text);
 
       const emoji = document.createElement('span');
       emoji.className = 'emoji';
@@ -80,7 +91,7 @@ export class ChatWheel {
 }
 
 const WHEEL_TEMPLATE = `
-<style>
+<style>${SURFACE_CSS}
   :host { all: initial; }
   .backdrop {
     position: absolute; inset: 0; background: rgba(6,7,11,.42);
@@ -96,22 +107,23 @@ const WHEEL_TEMPLATE = `
   .sector {
     position: absolute; left: -37px; top: -37px; width: 74px; height: 74px;
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-    border-radius: 50%; cursor: pointer; color: #eef1f8;
-    background: rgba(16,18,24,.9); border: 1px solid rgba(255,255,255,.12);
-    box-shadow: 0 10px 30px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
+    border-radius: 24px; cursor: pointer; color: var(--ink);
+    background: linear-gradient(140deg,var(--accent-soft),transparent),rgba(var(--surface-rgb),var(--surface-opacity)); border: 1px solid var(--line);
+    backdrop-filter:blur(16px);box-shadow: 0 10px 30px var(--shadow), inset 0 1px 0 rgba(255,255,255,.08);
     transition: transform .08s, border-color .15s, background .15s;
   }
-  .sector:hover { background: rgba(28,31,40,.95); border-color: rgba(124,245,255,.55); }
+  .sector:hover { border-color:var(--accent); }
+  .sector:hover .emoji {transform:translateY(-2px) scale(1.15);}
   .sector:active { transform: scale(.95); }
   .sector:focus-visible { outline: none; border-color: rgba(124,245,255,.7); box-shadow: 0 0 0 2px rgba(124,245,255,.3); }
-  .sector .emoji { font-size: 22px; line-height: 1; }
-  .sector .cap { font-size: 7.5px; line-height: 1.05; max-width: 64px; text-align: center; opacity: .82; }
+  .sector .emoji { font-size: 22px; line-height: 1;transition:transform var(--motion); }
+  .sector .cap { font:10px/1.1 var(--sans); max-width: 64px; text-align: center;color:var(--muted); }
   .center {
     position: absolute; left: -30px; top: -30px; width: 60px; height: 60px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center; cursor: pointer;
-    font-size: 20px; color: #eef1f8;
-    background: rgba(10,11,15,.92); border: 1px solid rgba(255,255,255,.14);
-    box-shadow: 0 8px 24px rgba(0,0,0,.55);
+    font-size: 20px; color:var(--accent-ink);
+    background:var(--gradient); border: 1px solid var(--line);
+    box-shadow: 0 8px 24px var(--shadow);
   }
   .center:hover { border-color: rgba(255,155,225,.6); color: #ffd6f1; }
   .center:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(255,155,225,.4); }
