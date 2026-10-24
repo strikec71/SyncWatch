@@ -63,3 +63,4 @@ jobs:
           path: |
             docs/audit/fullscreen-results.json
             docs/audit/fullscreen-*.png
+            docs/audit/design/

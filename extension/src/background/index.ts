@@ -1,3 +1,5 @@
+import { tr } from '../shared/i18n';
+import { setLanguage } from '../shared/i18n';
 // Background service worker — тонкая точка входа ХАБА.
 // Синхрон — принадлежность ВКЛАДКИ: сессия резолвится по `sender.tab.id` (реестр в
 // state.ts), у каждой вкладки свой WS/комната/roster/островок. Логика по модулям:
@@ -174,7 +176,7 @@ const handleMessage: Parameters<typeof browser.runtime.onMessage.addListener>[0]
       case 'send-quick-message':
       case 'send-text-message': {
         const s = tabId != null ? peekSession(tabId) : null;
-        sendResponse(s ? (msg.kind === 'send-quick-message' ? onSendQuickMessage(s, msg.code) : onSendTextMessage(s, msg.text)) : { ok: false, error: 'Подключитесь к комнате' });
+        sendResponse(s ? (msg.kind === 'send-quick-message' ? onSendQuickMessage(s, msg.code) : onSendTextMessage(s, msg.text)) : { ok: false, error: tr('Подключитесь к комнате') });
         return;
       }
       case 'set-chat-draft': {
@@ -198,7 +200,7 @@ const handleMessage: Parameters<typeof browser.runtime.onMessage.addListener>[0]
       case 'remove-friend':
       case 'join-friend':
       case 'friend-request-incoming': {
-        if (tabId == null || (msg.kind === 'friend-request-incoming' && frameId !== 0)) { sendResponse({ ok: false, error: 'Недоступно в этом фрейме' }); return; }
+        if (tabId == null || (msg.kind === 'friend-request-incoming' && frameId !== 0)) { sendResponse({ ok: false, error: tr('Недоступно в этом фрейме') }); return; }
         const action = msg.kind === 'accept-friend' ? handleAcceptFriend(msg.id)
           : msg.kind === 'decline-friend' ? handleDeclineFriend(msg.id)
           : msg.kind === 'remove-friend' ? handleRemoveFriend(msg.id)
@@ -284,7 +286,7 @@ browser.alarms.onAlarm.addListener((alarm) => {
 browser.action.onClicked.addListener(async (tab) => {
   if (tab.id != null) {
     try { await browser.tabs.sendMessage(tab.id, { kind: 'toggle-overlay' }, { frameId: 0 }); }
-    catch { await browser.action.setTitle({ title: 'SyncWatch — откройте обычную веб-страницу и перезагрузите ее' }); }
+    catch { await browser.action.setTitle({ title: tr('SyncWatch — откройте обычную веб-страницу и перезагрузите ее') }); }
   }
 });
 
@@ -294,7 +296,7 @@ async function syncActionBadge(): Promise<void> {
     const s = await loadSettings();
     await browser.action.setBadgeText({ text: s.overlayEnabled ? '' : 'off' });
     await browser.action.setTitle({
-      title: s.overlayEnabled ? 'SyncWatch — скрыть островок' : 'SyncWatch — показать островок',
+      title: s.overlayEnabled ? tr('SyncWatch — скрыть островок') : tr('SyncWatch — показать островок'),
     });
   } catch { /* action API недоступно — пропускаем */ }
 }
@@ -305,6 +307,7 @@ browser.runtime.onInstalled.addListener(() => { void syncActionBadge(); void ens
 browser.runtime.onStartup.addListener(() => { void syncActionBadge(); void ensurePresenceAlarm(); });
 browser.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.settings) {
+    setLanguage(changes.settings.newValue?.language);
     void syncActionBadge();
     const next = changes.settings.newValue;
     const old = changes.settings.oldValue;

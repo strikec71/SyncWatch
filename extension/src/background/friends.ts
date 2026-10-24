@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Друзья + живой presence (Фаза «друзья»). Presence идёт HTTP-JSON к тому же Worker,
 // НЕ через WS-релей: `beat` («я онлайн вот в этой комнате») + `query` («статусы друзей +
 // мой инбокс»). Комнатный релей (room.ts / protocol.ts / parseWire) не трогаем.
@@ -86,7 +87,7 @@ export function mergeAcceptInbox(
   const added: string[] = [];
   for (const m of inbox) {
     if (m.kind !== 'accept' || byId.has(m.from)) continue;
-    const f: Friend = { id: m.from, name: m.fromName || 'Друг', addedAt: now };
+    const f: Friend = { id: m.from, name: m.fromName || tr('Друг'), addedAt: now };
     byId.set(f.id, f);
     added.push(f.name);
   }
@@ -189,7 +190,7 @@ export async function pollPresence(): Promise<void> {
     if (merged.friends.length > 64) return;
     if (merged.added.length) {
       await saveFriends(merged.friends);
-      for (const name of merged.added) toast(`${name} теперь у вас в друзьях`);
+      for (const name of merged.added) toast(tr`${name} теперь у вас в друзьях`);
     }
     for (const m of inbox) receipts[`${m.from}:${m.ts}`] = Date.now();
     for (const [key, at] of Object.entries(receipts)) if (Date.now() - at > 14 * 86400_000) delete receipts[key];
@@ -289,15 +290,15 @@ export async function handleAddFriendLink(
   sendResponse: (r: { link?: string; error?: string }) => void,
 ): Promise<void> {
   const settings = await loadSettings();
-  if (!settings.sharePresence) { sendResponse({ error: 'Включите обмен статусом с друзьями в настройках' }); return; }
+  if (!settings.sharePresence) { sendResponse({ error: tr('Включите обмен статусом с друзьями в настройках') }); return; }
   const host = httpsHostFromServer(settings.serverUrl);
   if (!settings.serverUrl || !host) {
-    sendResponse({ error: 'Сначала задайте адрес сервера в настройках островка' });
+    sendResponse({ error: tr('Сначала задайте адрес сервера в настройках островка') });
     return;
   }
   const [clientId, deviceName] = await Promise.all([ensureClientId(), ensureDeviceName()]);
   const result = await postJson(`${host}/presence/invite`, { clientId }) as { token?: string } | null;
-  if (!result?.token || !/^[a-f0-9]{64}$/.test(result.token)) { sendResponse({ error: 'Сервер недоступен или требует обновления для функции друзей' }); return; }
+  if (!result?.token || !/^[a-f0-9]{64}$/.test(result.token)) { sendResponse({ error: tr('Сервер недоступен или требует обновления для функции друзей') }); return; }
   // Poll the acceptance even when this is the first friend.
   await browser.storage.local.set({ friendInviteUntil: Date.now() + 7 * 86400_000 });
   browser.alarms.create(PRESENCE_ALARM, { periodInMinutes: PRESENCE_PERIOD_MIN });
@@ -310,15 +311,15 @@ export function handleAcceptFriend(id: string): Promise<void> {
     if (!entry) return;
     const settings = await loadSettings();
     const server = normalizeServerUrl(entry.serverUrl || settings.serverUrl);
-    if (!server || !entry.inviteToken) throw new Error('Нужна новая ссылка-приглашение от друга');
-    if (settings.serverUrl && settings.serverUrl !== server) throw new Error('У друга другой сервер. Укажите его сервер в настройках перед принятием');
+    if (!server || !entry.inviteToken) throw new Error(tr('Нужна новая ссылка-приглашение от друга'));
+    if (settings.serverUrl && settings.serverUrl !== server) throw new Error(tr('У друга другой сервер. Укажите его сервер в настройках перед принятием'));
     const friends = await loadFriends();
-    if (friends.length >= 64 && !friends.some(f => f.id === id)) throw new Error('В списке уже 64 друга');
+    if (friends.length >= 64 && !friends.some(f => f.id === id)) throw new Error(tr('В списке уже 64 друга'));
     const [clientId, deviceName] = await Promise.all([ensureClientId(), ensureDeviceName()]);
     const result = await postJson(`${httpsHostFromServer(server)}/presence/friend`, { from: clientId, fromName: deviceName, to: id, token: entry.inviteToken }) as { ok?: boolean } | null;
-    if (!result?.ok) throw new Error('Не удалось принять запрос. Проверьте сервер или попросите новую ссылку');
+    if (!result?.ok) throw new Error(tr('Не удалось принять запрос. Проверьте сервер или попросите новую ссылку'));
     if (!settings.serverUrl) await saveSettings({ serverUrl: server });
-    if (!friends.some(f => f.id === id)) await saveFriends([...friends, { id, name: entry.name || 'Друг', addedAt: Date.now() }]);
+    if (!friends.some(f => f.id === id)) await saveFriends([...friends, { id, name: entry.name || tr('Друг'), addedAt: Date.now() }]);
     await saveFriendInbox(inbox.filter(e => e.id !== id));
     await ensurePresenceAlarm(); await beatPresence(); await pushFriendsStatus();
   });
@@ -360,11 +361,11 @@ export function handleFriendRequestIncoming(msg: FriendRequestIncomingMsg): Prom
     );
     await saveFriendInbox(next);
   } else {
-    if (inbox.length >= 64) throw new Error('Слишком много запросов в друзья');
+    if (inbox.length >= 64) throw new Error(tr('Слишком много запросов в друзья'));
     inbox.push({
       inviteToken: msg.inviteToken,
       id: msg.id,
-      name: msg.name.slice(0, 64) || 'Друг',
+      name: msg.name.slice(0, 64) || tr('Друг'),
       serverUrl: msg.serverUrl ?? '',
       ts: Date.now(),
     });
@@ -377,13 +378,13 @@ export function handleFriendRequestIncoming(msg: FriendRequestIncomingMsg): Prom
 export async function handleJoinFriend(id: string): Promise<void> {
   const view = friendViews.get(id);
   if (!view || !view.online || !view.room) {
-    toast('Друг сейчас не в комнате');
+    toast(tr('Друг сейчас не в комнате'));
     return;
   }
   const settings = await loadSettings();
   const host = httpsHostFromServer(settings.serverUrl);
   if (!settings.serverUrl || !host) {
-    toast('Не задан адрес сервера');
+    toast(tr('Не задан адрес сервера'));
     return;
   }
   await browser.tabs.create({ url: buildJoinUrl(host, view.room, settings.serverUrl) });

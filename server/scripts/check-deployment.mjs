@@ -18,7 +18,7 @@ const metadata = await health.json();
 const version = JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
 if (metadata.service !== 'syncwatch-signal' || metadata.version !== version || metadata.revision !== expectedRevision) throw new Error('Health response is not the release that was deployed');
 const privacy = await fetch(new URL('/privacy',base),{...options,signal:AbortSignal.timeout(15_000)});
-if (!privacy.ok || !(await privacy.text()).includes('Присутствие')) throw new Error('Privacy page unavailable');
+if (!privacy.ok || !(await privacy.text()).includes('Presence and friends')) throw new Error('Privacy page unavailable');
 const room = new URL('/room/release-check-'+randomUUID(),base); room.protocol=base.protocol==='https:'?'wss:':'ws:';
 const socket = new WebSocket(room);
 try {

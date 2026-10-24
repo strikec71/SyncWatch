@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Чат-поверхность островка (Фаза 0.7.0). Вынесена из overlay.ts, чтобы держать оба файла
 // < 500 строк. Отвечает за: кнопку 💬 в шапке + радиальное колесо (chatwheel), лог сообщений
 // в секции «Чат», бейдж непрочитанных и disabled-состояние вне подключения.
@@ -9,6 +10,7 @@ import browser from '../shared/browser';
 import type { StatusSnapshot, ChatEntry } from '../shared/messages';
 import { quickMessageByCode, CHAT_COOLDOWN_MS, CHAT_LOG_MAX } from '../shared/quick-messages';
 import { ChatWheel } from './chatwheel';
+import type { Appearance } from '../shared/appearance';
 
 /** Видимый текст сообщения из кода каталога и/или свободного текста. */
 function renderContent(entry: ChatEntry): string {
@@ -37,28 +39,38 @@ export class OverlayChat {
   private loading = false;
   private draftTouched = false;
   private pending: ChatEntry[] = [];
-  private onToggle: () => void;
+  private rows = new Map<HTMLElement, ChatEntry>();
+  refreshLanguage(): void {
+    this.wheel.close();
+    for (const [row, entry] of this.rows) {
+      row.querySelector('.chat-meta')!.textContent = `${entry.self ? tr('вы') : entry.name} · ${fmtClock(entry.ts)}`;
+      row.querySelector('.chat-text')!.textContent = renderContent(entry);
+    }
+  }
 
   constructor(
     private shadow: ShadowRoot,
     private hint: (text: string) => void,
   ) {
     this.wheel = new ChatWheel((code) => this.pick(code));
-    this.$('chatinput').addEventListener('input', () => { this.draftTouched = true; this.saveDraft(); });
+    this.$('chatinput').addEventListener('input', () => { this.draftTouched = true; this.saveDraft(); this.updateCount(); });
     this.$('chatsend').addEventListener('click', () => void this.sendText());
     this.$('chatinput').addEventListener('keydown', event => {
       if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); void this.sendText(); }
     });
     this.$('chat-open').addEventListener('click', () => this.toggleWheel());
-    // Раскрытие секции «Чат» — прочитано: сбрасываем счётчик непрочитанных.
-    this.onToggle = () => this.resetUnreadIfVisible();
-    this.$('chatbox').addEventListener('toggle', this.onToggle);
+  }
+
+  setAppearance(prefs: Appearance): void { this.wheel.setAppearance(prefs); }
+  private updateCount(): void {
+    const counter = this.shadow.getElementById('chat-count');
+    if (counter) counter.textContent = `${(this.$('chatinput') as HTMLInputElement).value.length} / 200`;
   }
 
   private $(id: string): HTMLElement { return this.shadow.getElementById(id)!; }
 
   private toggleWheel(): void {
-    if (!this.connected) { this.hint('Подключитесь, чтобы отправлять сообщения'); return; }
+    if (!this.connected) { this.hint(tr('Подключитесь, чтобы отправлять сообщения')); return; }
     if (this.wheel.isOpen) this.wheel.close();
     else this.wheel.open();
   }
@@ -70,23 +82,23 @@ export class OverlayChat {
   private async sendText(): Promise<void> {
     const input = this.$('chatinput') as HTMLInputElement;
     const text = input.value;
-    if (!text.trim() || text.length > 200) { this.hint('Введите от 1 до 200 символов'); return; }
-    if (await this.send({ kind: 'send-text-message', text }) && input.value === text) { input.value = ''; this.saveDraft(); }
+    if (!text.trim() || text.length > 200) { this.hint(tr('Введите от 1 до 200 символов')); return; }
+    if (await this.send({ kind: 'send-text-message', text }) && input.value === text) { input.value = ''; this.saveDraft(); this.updateCount(); }
   }
   private saveDraft(): void {
     const text = (this.$('chatinput') as HTMLInputElement).value;
     void browser.runtime.sendMessage({kind:'set-chat-draft',text}).catch(() => {});
   }
   private async send(message: { kind: 'send-quick-message'; code: string } | { kind: 'send-text-message'; text: string }): Promise<boolean> {
-    if (this.sending || Date.now() < this.cooldownUntil) { this.hint('Подождите секунду перед следующим сообщением'); return false; }
+    if (this.sending || Date.now() < this.cooldownUntil) { this.hint(tr('Подождите секунду перед следующим сообщением')); return false; }
     this.sending = true;
     try {
       const response = await browser.runtime.sendMessage(message) as { ok?: boolean; error?: string } | undefined;
       if (this.destroyed) return false;
-      if (!response?.ok) { this.hint(response?.error || 'Не удалось отправить сообщение'); return false; }
+      if (!response?.ok) { this.hint(response?.error || tr('Не удалось отправить сообщение')); return false; }
       this.cooldownUntil = Date.now() + CHAT_COOLDOWN_MS;
       return true;
-    } catch { if (!this.destroyed) this.hint('Соединение прервано — повторите отправку'); return false; }
+    } catch { if (!this.destroyed) this.hint(tr('Соединение прервано — повторите отправку')); return false; }
     finally { this.sending = false; }
   }
 
@@ -99,6 +111,7 @@ export class OverlayChat {
         const entries = (r as { entries?: ChatEntry[] } | undefined)?.entries ?? [];
         if (this.destroyed) return;
         if (!this.draftTouched) (this.$('chatinput') as HTMLInputElement).value = (r as {draft?:string})?.draft || '';
+        this.updateCount();
         const counts = new Map<string, number>();
         for (const e of entries) { this.appendRow(e); const key = JSON.stringify(e); counts.set(key, (counts.get(key) || 0) + 1); }
         for (const e of this.pending) {
@@ -124,10 +137,14 @@ export class OverlayChat {
     if (!content) return;
     const row = document.createElement('div');
     row.className = 'crow' + (entry.self ? ' self' : '');
-    const who = entry.self ? 'вы' : entry.name;
-    row.textContent = `${who} · ${fmtClock(entry.ts)} · ${content}`; // ← textContent ONLY
+    const who = entry.self ? tr('вы') : entry.name;
+    const meta = document.createElement('span'); meta.className = 'chat-meta';
+    meta.textContent = `${who} · ${fmtClock(entry.ts)}`;
+    const body = document.createElement('span'); body.className = 'chat-text'; body.textContent = content;
+    row.append(meta, body); // untrusted names and content remain text, never HTML
     log.appendChild(row);
-    while (log.childElementCount > CHAT_LOG_MAX) log.firstElementChild?.remove();
+    this.rows.set(row, entry);
+    while (log.childElementCount > CHAT_LOG_MAX) { this.rows.delete(log.firstElementChild as HTMLElement); log.firstElementChild?.remove(); }
     log.scrollTop = log.scrollHeight; // автоскролл к последнему
   }
 
@@ -139,7 +156,7 @@ export class OverlayChat {
     (this.$('chatinput') as HTMLInputElement).disabled = !this.connected;
     (this.$('chatsend') as HTMLButtonElement).disabled = !this.connected;
     btn.classList.toggle('disabled', !this.connected);
-    btn.title = this.connected ? 'Быстрые сообщения' : 'Подключитесь, чтобы отправлять сообщения';
+    btn.title = this.connected ? tr('Быстрые сообщения') : tr('Подключитесь, чтобы отправлять сообщения');
     if (!this.connected) this.wheel.close();
   }
 
@@ -147,8 +164,7 @@ export class OverlayChat {
   private isVisible(): boolean {
     const panel = this.shadow.querySelector('.panel');
     const collapsed = panel?.classList.contains('collapsed') ?? true;
-    const box = this.$('chatbox') as HTMLDetailsElement;
-    return !collapsed && !panel?.classList.contains('compact') && box.open;
+    return !collapsed && !panel?.classList.contains('compact') && !this.$('chatbox').hidden;
   }
 
   /** Сброс непрочитанных, если чат сейчас виден (зовётся на toggle секции и разворот панели). */
@@ -158,14 +174,16 @@ export class OverlayChat {
 
   private renderBadge(): void {
     const badge = this.$('chatbadge');
+    const mini = this.shadow.getElementById('mini-unread');
+    if (mini) { mini.hidden = this.unread <= 0; mini.textContent = this.unread > 9 ? '9+' : String(this.unread); }
     if (this.unread <= 0) { badge.hidden = true; return; }
     badge.hidden = false;
     badge.textContent = this.unread > 9 ? '9+' : String(this.unread);
   }
 
   destroy(): void {
+    this.rows.clear();
     this.destroyed = true; this.pending = [];
-    this.$('chatbox').removeEventListener('toggle', this.onToggle);
     this.wheel.close();
   }
 }

@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // WebSocket-жизнецикл хаба ПО ВКЛАДКАМ: connect/disconnect на конкретную `Session`,
 // hardened reconnect (backoff с джиттером в самой сессии), dead-socket watchdog, onWire.
 // Zombie-gate инвариант сохранён: КАЖДЫЙ обработчик сокета гейтится `s.ws !== ws`.
@@ -68,17 +69,17 @@ export async function connect(
 ): Promise<{ ok: boolean; error?: string }> {
   const generation = ++s.connectGeneration;
   const settings = await loadSettings();
-  if (generation !== s.connectGeneration) return { ok: false, error: 'Подключение отменено' };
+  if (generation !== s.connectGeneration) return { ok: false, error: tr('Подключение отменено') };
   const useRoom = (room || s.room).trim();
   const useServer = normalizeServerUrl(serverUrl || s.serverUrl || settings.serverUrl);
-  if (!validRoom(useRoom)) return { ok: false, error: 'Код комнаты: 1–128 латинских букв, цифр, дефисов или _' };
-  if (!useServer) return { ok: false, error: 'Укажите корректный wss:// сервер (ws:// — только localhost)' };
+  if (!validRoom(useRoom)) return { ok: false, error: tr('Код комнаты: 1–128 латинских букв, цифр, дефисов или _') };
+  if (!useServer) return { ok: false, error: tr('Укажите корректный wss:// сервер (ws:// — только localhost)') };
 
   if (s.room !== useRoom || s.serverUrl !== useServer) { s.chatLog = []; s.chatDraft = ''; s.lastChatSentAt = 0; s.navigationOrigin = ''; s.expectedNav = null; s.expectedSig = null; s.mismatchSig = null; }
   teardownSocket(s); // тихо снимаем старый сокет, не трогая backoff/intentionalClose
 
   const name = await ensureDeviceName();
-  if (generation !== s.connectGeneration) return { ok: false, error: 'Подключение отменено' };
+  if (generation !== s.connectGeneration) return { ok: false, error: tr('Подключение отменено') };
   s.deviceName = name;
   s.autoConnect = settings.autoConnect;
   s.intentionalClose = false;
@@ -107,7 +108,7 @@ export async function connect(
       sendWire(s, { type: 'JOIN', room: useRoom, name: s.deviceName });
       if (s.detached) sendWire(s, { type: 'MODE', detached: true }); // соло переживает реконнект
       browser.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 }); // keepalive; браузер клампит к минимуму (Chrome ~30с, FF ~60с)
-      notifyEvent(s, `Соединяемся с комнатой «${useRoom}»…`);
+      notifyEvent(s, tr`Соединяемся с комнатой «${useRoom}»…`);
       notifyPopup(s);
     });
     ws.addEventListener('message', (evt) => { if (s.ws === ws) onWire(s, evt.data); });
@@ -115,7 +116,7 @@ export async function connect(
       if (s.ws !== ws) return;
       if ([1008, 1009, 1013].includes(event.code)) {
         s.intentionalClose = true; cancelReconnect(s); teardownSocket(s);
-        s.phase = 'error'; s.error = event.code === 1013 ? 'Комната заполнена (максимум 10 участников)' : 'Сервер отклонил подключение: ' + event.reason;
+        s.phase = 'error'; s.error = event.code === 1013 ? tr('Комната заполнена (максимум 10 участников)') : tr('Сервер отклонил подключение: ') + event.reason;
         void persistSessions().catch(() => {}); notifyPopup(s); return;
       }
       onSocketDown(s);
@@ -157,7 +158,7 @@ function teardownSocket(s: Session): void {
 
 /** Сокет упал (close/error/watchdog): снимаем и, если уместно, реконнектим. */
 function onSocketDown(s: Session): void {
-  if (!s.intentionalClose) notifyEvent(s, s.autoConnect ? 'Соединение потеряно — переподключаюсь…' : 'Соединение потеряно');
+  if (!s.intentionalClose) notifyEvent(s, s.autoConnect ? tr('Соединение потеряно — переподключаюсь…') : tr('Соединение потеряно'));
   teardownSocket(s);
   s.phase = s.autoConnect && !s.intentionalClose ? 'retrying' : 'disconnected'; notifyPopup(s);
   scheduleReconnect(s);
@@ -225,7 +226,7 @@ export function cancelReconnect(s: Session): void {
 export function checkWatchdog(s: Session): void {
   if (!s.connected || !s.ws) return;
   if (Date.now() - s.lastRecvAt > WATCHDOG_SILENCE_MS) {
-    notifyEvent(s, 'Соединение зависло — переподключаюсь…');
+    notifyEvent(s, tr('Соединение зависло — переподключаюсь…'));
     onSocketDown(s);
   }
 }
@@ -242,7 +243,7 @@ export function checkIdle(s: Session): void {
     now: Date.now(),
     idleMs: IDLE_DISCONNECT_MS,
   })) return;
-  notifyEvent(s, 'Простой дольше 6 ч — соединение приостановлено, продолжится при просмотре');
+  notifyEvent(s, tr('Простой дольше 6 ч — соединение приостановлено, продолжится при просмотре'));
   // idle-закрытие (НЕ ручное): intentionalClose НЕ ставим, реконнект по таймеру не планируем.
   // Сокет рвём (экономим трафик); вернёмся автоматически при первой активности (maybeResume).
   s.idleClosed = true;

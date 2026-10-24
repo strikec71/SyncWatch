@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Обработка ссылок-приглашений в друзья (Фаза «друзья»).
 // Ссылка вида  <любой URL>#syncwatch-friend=<clientId>&n=<имя>&s=<wss-сервер>  —
 // кладём запрос в инбокс друзей (background), островок покажет «Принять / Отклонить».
@@ -5,6 +6,7 @@
 // (у того другой ключ хэша, `r`/`syncwatch`, — не пересекается) и ДО startNavSync().
 
 import browser from '../shared/browser';
+import { loadSettings } from '../shared/settings';
 import { normalizeServerUrl } from '../shared/validation';
 import { showFloatingLayer, removeFloatingLayer } from './floating-layer';
 
@@ -33,7 +35,7 @@ export function handleFriendInvite(): void {
     .sendMessage({ kind: 'friend-request-incoming', id, name, serverUrl, inviteToken })
     .catch(() => { /* SW перезапускается — повторится при следующем открытии ссылки */ });
 
-  showToast(`SyncWatch: запрос в друзья от ${name || 'кого-то'} — откройте островок, раздел «Друзья»`);
+  void loadSettings().then(() => showToast(tr`SyncWatch: запрос в друзья от ${name || tr('кого-то')} — откройте островок, раздел «Друзья»`));
 }
 
 /** Короткое всплывающее подтверждение (4с). Дальше запрос виден в островке → «Друзья». */

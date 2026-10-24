@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Раздел «Друзья» островка (Фаза «друзья + presence»). Вынесен из overlay.ts, чтобы
 // держать оба файла < 500 строк и дать tester'у юнит-тест логики без DOM-обвязки панели.
 //
@@ -32,7 +33,7 @@ export function friendsOnlineCount(data: FriendsData): number {
 
 /** Подпись под именем друга по статусу. */
 export function subLabel(status: FriendRow['status']): string {
-  return status === 'watching' ? 'смотрит' : status === 'online' ? 'онлайн' : 'не в сети';
+  return status === 'watching' ? tr('смотрит') : status === 'online' ? tr('онлайн') : tr('не в сети');
 }
 
 /** Содержимое раздела: блок входящих запросов сверху + список друзей. Имена — textContent. */
@@ -45,7 +46,7 @@ export function buildFriendsSection(data: FriendsData, cb: FriendsCallbacks): Do
     if (data.inbox.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'frow empty';
-      empty.textContent = 'друзей пока нет — «Добавить друга» создаст ссылку';
+      empty.textContent = tr('друзей пока нет — «Добавить друга» создаст ссылку');
       frag.appendChild(empty);
     }
     return frag;
@@ -61,12 +62,12 @@ function buildInboxRow(req: InboxRow, cb: FriendsCallbacks): HTMLElement {
 
   const text = document.createElement('span');
   text.className = 'fname';
-  text.textContent = `${req.name || 'Кто-то'} хочет добавить вас`; // ← textContent ONLY
+  text.textContent = tr`${req.name || tr('Кто-то')} хочет добавить вас`; // ← textContent ONLY
 
   row.append(
     text,
-    miniBtn('Принять', () => cb.onAccept(req.id), true),
-    miniBtn('Отклонить', () => cb.onDecline(req.id), false),
+    miniBtn(tr('Принять'), () => cb.onAccept(req.id), true),
+    miniBtn(tr('Отклонить'), () => cb.onDecline(req.id), false),
   );
   return row;
 }
@@ -81,7 +82,7 @@ function buildFriendRow(f: FriendRow, cb: FriendsCallbacks): HTMLElement {
 
   const name = document.createElement('span');
   name.className = 'fname';
-  name.textContent = f.name || 'друг'; // ← textContent ONLY
+  name.textContent = f.name || tr('друг'); // ← textContent ONLY
 
   const sub = document.createElement('span');
   sub.className = 'fsub';
@@ -89,11 +90,11 @@ function buildFriendRow(f: FriendRow, cb: FriendsCallbacks): HTMLElement {
 
   row.append(dot, name, sub);
 
-  if (f.status === 'watching') row.appendChild(miniBtn('Войти', () => cb.onJoin(f.id), true));
+  if (f.status === 'watching') row.appendChild(miniBtn(tr('Войти'), () => cb.onJoin(f.id), true));
 
   const rm = miniBtn('✕', () => cb.onRemove(f.id), false);
   rm.classList.add('frm');
-  rm.title = 'Удалить из друзей';
+  rm.title = tr('Удалить из друзей');
   row.appendChild(rm);
   return row;
 }
@@ -110,6 +111,7 @@ function miniBtn(label: string, onClick: () => void, accent: boolean): HTMLEleme
 // ── Контроллер раздела ───────────────────────────────────────────────────────
 
 export class FriendsPanel {
+  refreshLanguage(): void { this.render(); }
   private data: FriendsData = { friends: [], inbox: [] };
 
   constructor(
@@ -161,19 +163,19 @@ export class FriendsPanel {
     const b = this.$('fbadge');
     b.hidden = n <= 0;
     b.textContent = String(n);
-    b.title = `Друзей онлайн: ${n}`;
+    b.title = tr`Друзей онлайн: ${n}`;
   }
 
   /** Мутации — fire-and-forget: background рассылает свежий `friends-status` после каждой. */
   private send(msg: RuntimeMessage): void {
-    void browser.runtime.sendMessage(msg).then((r: { error?: string } | undefined) => { if (r?.error) this.hint(r.error); }).catch(() => this.hint('Связь с расширением прервана — повторите действие'));
+    void browser.runtime.sendMessage(msg).then((r: { error?: string } | undefined) => { if (r?.error) this.hint(r.error); }).catch(() => this.hint(tr('Связь с расширением прервана — повторите действие')));
   }
 
   private async addLink(): Promise<void> {
     const r = (await browser.runtime
       .sendMessage({ kind: 'add-friend-link' })
       .catch(() => null)) as { link?: string; error?: string } | null;
-    if (r?.link) this.copy(r.link, 'Ссылка скопирована: действует 7 дней; прежняя ссылка заменена');
-    else this.hint(r?.error || 'Не удалось создать ссылку — укажите адрес сервера в «Настройках»');
+    if (r?.link) this.copy(r.link, tr('Ссылка скопирована: действует 7 дней; прежняя ссылка заменена'));
+    else this.hint(r?.error || tr('Не удалось создать ссылку — укажите адрес сервера в «Настройках»'));
   }
 }

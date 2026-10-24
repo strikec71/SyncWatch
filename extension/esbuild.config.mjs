@@ -22,6 +22,7 @@ async function buildTarget(target) {
   await mkdir(outdir, { recursive: true });
   await cp(manifestSrc, `${outdir}/manifest.json`);
   await cp('icons', `${outdir}/icons`, { recursive: true });
+  await cp('_locales', `${outdir}/_locales`, { recursive: true });
   await writeFile(`${outdir}/release-config.json`, JSON.stringify({ serverUrl: defaultServer }, null, 2) + '\n');
 
   const ctx = await esbuild.context({

@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Чистые помощники roster-поверхности островка (Фаза B).
 // Вынесены из overlay.ts, чтобы: (1) держать overlay.ts < 500 строк, (2) tester мог
 // юнит-тестить логику бейджей/кнопок и генерацию кода БЕЗ браузера/DOM.
@@ -8,6 +9,7 @@
 
 import type { StatusSnapshot } from '../shared/messages';
 import type { RosterPeer } from '../shared/protocol';
+import { getLanguage } from '../shared/i18n';
 
 /** Дружелюбный код комнаты: `слово-слово-NN` (нижний регистр). `rnd` инъектируется для тестов. */
 export function friendlyCode(): string {
@@ -58,20 +60,21 @@ export function decideRowControls(snapshot: StatusSnapshot, rowId: number): RowC
 export interface DetachButton { label: string; title: string; next: boolean; }
 export function detachButton(detached: boolean): DetachButton {
   return detached
-    ? { label: 'Вернуться в синхрон', title: 'вернуться к общему просмотру', next: false }
-    : { label: 'Смотреть соло', title: 'смотреть в своём темпе', next: true };
+    ? { label: tr('Вернуться в синхрон'), title: tr('вернуться к общему просмотру'), next: false }
+    : { label: tr('Смотреть соло'), title: tr('смотреть в своём темпе'), next: true };
 }
 
 /** Число участников с корректной русской формой слова: `N участник(а/ов)`.
  *  Обычные правила: 1/21/31… → участник; 2-4/22-24… → участника; 5-20/11-14/25… → участников. */
 export function peersLabel(n: number): string {
+  if (getLanguage() === 'en') return `${n} ${n === 1 ? 'participant' : 'participants'}`;
   const mod100 = n % 100;
   const mod10 = n % 10;
   let word: string;
-  if (mod100 >= 11 && mod100 <= 14) word = 'участников';
-  else if (mod10 === 1) word = 'участник';
-  else if (mod10 >= 2 && mod10 <= 4) word = 'участника';
-  else word = 'участников';
+  if (mod100 >= 11 && mod100 <= 14) word = tr('участников');
+  else if (mod10 === 1) word = tr('участник');
+  else if (mod10 >= 2 && mod10 <= 4) word = tr('участника');
+  else word = tr('участников');
   return `${n} ${word}`;
 }
 
@@ -98,24 +101,24 @@ export function buildRosterRow(
 
   const name = document.createElement('span');
   name.className = 'pname';
-  name.textContent = peer.name || 'участник'; // ← textContent ONLY (XSS-гейт)
+  name.textContent = peer.name || tr('участник'); // ← textContent ONLY (XSS-гейт)
 
   row.append(dot, name);
 
-  if (ctl.isHost) row.appendChild(badge('хост'));
-  if (ctl.isSelf) row.appendChild(badge('вы', 'me'));
-  if (ctl.detached) row.appendChild(badge('соло', 'muted'));
-  if (ctl.hasControl && !ctl.isHost) row.appendChild(badge('управляет', 'ctl'));
+  if (ctl.isHost) row.appendChild(badge(tr('хост')));
+  if (ctl.isSelf) row.appendChild(badge(tr('вы'), 'me'));
+  if (ctl.detached) row.appendChild(badge(tr('соло'), 'muted'));
+  if (ctl.hasControl && !ctl.isHost) row.appendChild(badge(tr('управляет'), 'ctl'));
 
   if (ctl.showGrant) {
     row.appendChild(rowBtn(
-      ctl.grantActive ? 'Забрать управление' : 'Передать управление',
-      ctl.grantActive ? 'забрать управление' : 'выдать управление',
+      ctl.grantActive ? tr('Забрать') : tr('Передать'),
+      ctl.grantActive ? tr('забрать управление') : tr('выдать управление'),
       ctl.grantActive,
       () => cb.onGrantToggle(peer.id, !ctl.grantActive),
     ));
   } else if (ctl.showRequest) {
-    row.appendChild(rowBtn('Запросить управление', 'попросить право управления у хоста', false, () => cb.onRequest()));
+    row.appendChild(rowBtn(tr('Запросить управление'), tr('попросить право управления у хоста'), false, () => cb.onRequest()));
   }
   return row;
 }
@@ -132,6 +135,7 @@ function rowBtn(text: string, title: string, active: boolean, onClick: () => voi
   b.type = 'button';
   b.className = 'btn micro' + (active ? ' on' : '');
   b.textContent = text;
+  b.setAttribute('aria-label', title);
   b.title = title;
   b.addEventListener('click', onClick);
   return b;

@@ -1,0 +1,37 @@
+Watch together. Stay in sync.
+
+SyncWatch brings your friends to the video you already watch. It synchronizes HTML video playback, pause, seeking and speed for up to 10 participants, with room chat and a customizable Glass Lounge panel.
+
+Everyone opens the original video on their own device. SyncWatch does not stream video or audio, provide a media library, or bypass subscriptions and access restrictions.
+
+GET STARTED
+1. Open a video page and click the SyncWatch toolbar icon. New installations include the SyncWatch relay; you can choose your own compatible server. Existing custom server settings are preserved.
+2. Create a room code, connect, and copy an invitation link.
+3. Your friend opens the link, checks the server and room, and confirms joining. Everyone needs access to the same video. Site autoplay rules may require clicking Play.
+
+MADE FOR YOUR MOVIE NIGHT
+• Up to 10 participants, without a separate SyncWatch account.
+• Synchronized play/pause/seek and playback speed, drift correction and reconnection.
+• Shared controls for two participants. In larger rooms, the host or an assigned controller manages playback; anyone can request a pause.
+• Room chat with messages up to 200 characters, quick reactions, saved drafts and unread indicators. Chat history is held in the current background session, not a permanent archive.
+• Friend invitations and optional presence sharing on your chosen server.
+• A gradient glass panel with Room, Chat, Friends and Style tabs, plus a compact icon when minimized.
+• English and Russian interfaces. Choose your language in Style; Browser language selects Russian for Russian locales and English otherwise.
+• Dark, light or system themes; four gradients; two panel sizes; opacity, motion and left/right placement. System reduced motion is respected.
+• Independent rooms for each tab. Watch solo when you want independent playback while staying in the conversation.
+• Supported fullscreen panels, quick messages and notifications, including embedded players. Native HTML video has a small ⛶ control.
+
+COMPATIBILITY
+Chrome 120+. SyncWatch detects HTML video and includes adapters for YouTube, PlayerJS, Kodik, Alloha and jut.su. Results depend on the site's current player, advertisements, frame permissions and autoplay policies; every website is not guaranteed. Automatic shared navigation stays within the current viewing site. Supported adapters can coordinate episode/season/audio choices and buffering or advertisements.
+
+YOUR DATA
+The selected relay processes room codes, viewing URLs, content choices, display names, playback commands and chat. Friend presence uses a public installation identifier, signed requests and temporary access information; the private key stays on your device. The default relay uses Cloudflare, and you can choose another server.
+
+HTTPS/WSS encrypts transport. The server processes relayed contents; end-to-end encryption is not provided. Data are not sold or used for advertising. No analytics, remote translation service or downloaded JavaScript is included.
+
+Privacy: https://syncwatch-signal.strikec71.workers.dev/privacy?lang=en
+Source and guide: https://github.com/strikec71/SyncWatch
+Support: https://github.com/strikec71/SyncWatch/issues
+
+NEW IN 0.10.0
+Full English interface with a saved English/Russian/browser-language selector. Language changes preserve your room, appearance and chat draft. Quick messages use each recipient's selected language. Updated invitation/privacy pages, documentation and screenshots.

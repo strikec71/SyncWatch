@@ -4,6 +4,7 @@ extension/dist.zip
 /release/
 .wrangler/
 *.log
+/docs/audit/design/
 .DS_Store
 
 # Локальные настройки Claude Code и кэш ruflo — не для публичного репо

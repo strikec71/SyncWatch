@@ -9,6 +9,8 @@
 import { showFloatingLayer, hideFloatingLayer, removeFloatingLayer } from './floating-layer';
 import type { ChatEntry } from '../shared/messages';
 import { quickMessageByCode } from '../shared/quick-messages';
+import { DEFAULT_APPEARANCE, type Appearance } from '../shared/appearance';
+import { applyAppearance, SURFACE_CSS } from './appearance';
 
 const MAX_BUBBLES = 3;
 const BUBBLE_TTL_MS = 6000;
@@ -25,9 +27,15 @@ function renderContent(entry: ChatEntry): string {
 }
 
 export class ChatBubbles {
+  private prefs: Appearance = DEFAULT_APPEARANCE;
+  setAppearance(prefs: Appearance): void { this.prefs = prefs; if (this.host) applyAppearance(this.host, prefs); }
   private host: HTMLDivElement | null = null;
   private stack: HTMLElement | null = null;
   private timers = new Map<HTMLElement, number>();
+  private entries = new Map<HTMLElement, ChatEntry>();
+  refreshLanguage(): void {
+    for (const [bubble, entry] of this.entries) bubble.textContent = `💬 ${entry.name}: ${renderContent(entry)}`;
+  }
 
   /** Показать бабл для входящего сообщения. Своё (self) пропускаем — оно только в логе. */
   push(entry: ChatEntry): void {
@@ -42,12 +50,13 @@ export class ChatBubbles {
     bubble.className = 'bubble';
     bubble.textContent = `💬 ${entry.name}: ${content}`; // ← textContent ONLY (XSS-гейт)
     this.stack.appendChild(bubble);
+    this.entries.set(bubble, entry);
     while (this.stack.childElementCount > MAX_BUBBLES) {
       const oldest = this.stack.firstElementChild as HTMLElement;
-      clearTimeout(this.timers.get(oldest)); this.timers.delete(oldest); oldest.remove();
+      clearTimeout(this.timers.get(oldest)); this.timers.delete(oldest); this.entries.delete(oldest); oldest.remove();
     }
     this.timers.set(bubble, window.setTimeout(() => {
-      this.timers.delete(bubble); bubble.remove();
+      this.timers.delete(bubble); this.entries.delete(bubble); bubble.remove();
       if (!this.stack?.childElementCount && this.host) hideFloatingLayer(this.host);
     }, BUBBLE_TTL_MS));
 
@@ -57,6 +66,7 @@ export class ChatBubbles {
   private ensureHost(): void {
     if (this.host) { this.host.style.display = ''; return; }
     const host = document.createElement('div');
+    applyAppearance(host, this.prefs);
     host.setAttribute('popover', 'manual');
     // ВАЖНО: inset:auto ДО left/top — иначе шорткат inset затирает офсеты (уезжает в угол).
     // Ниже баннера (14% + высота плашки), по центру.
@@ -77,6 +87,7 @@ export class ChatBubbles {
   }
 
   destroy(): void {
+    this.entries.clear();
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
     if (this.host) removeFloatingLayer(this.host);
@@ -87,19 +98,19 @@ export class ChatBubbles {
 }
 
 const BUBBLES_TEMPLATE = `
-<style>
+<style>${SURFACE_CSS}
   :host { all: initial; }
   .stack { display: flex; flex-direction: column; align-items: center; gap: 8px; }
   .bubble {
     max-width: min(72vw, 460px);
     font-family: system-ui,-apple-system,sans-serif; font-size: 13px; font-weight: 500;
-    line-height: 1.35; color: #eef1f8; text-align: center;
-    padding: 8px 15px; border-radius: 999px;
-    background: rgba(14,16,22,.72);
+    line-height:1.5;color:var(--ink);text-align:center;overflow-wrap:anywhere;
+    padding:10px 16px;border-radius:18px;
+    background:linear-gradient(125deg,var(--accent-soft),transparent),rgba(var(--surface-rgb),var(--surface-opacity));
     -webkit-backdrop-filter: blur(12px) saturate(1.3); backdrop-filter: blur(12px) saturate(1.3);
-    border: 1px solid rgba(255,255,255,.10);
-    box-shadow: 0 8px 26px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
-    animation: pop .28s ease both;
+    border:1px solid var(--line);
+    box-shadow:0 8px 26px var(--shadow),inset 0 1px 0 rgba(255,255,255,.06);
+    animation:pop var(--motion) ease both;
   }
   @keyframes pop { from { opacity: 0; transform: translateY(-6px) scale(.96); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .bubble { animation: none; } }

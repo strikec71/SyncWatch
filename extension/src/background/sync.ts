@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Синхронизация плеера: локальные события → STATE (с гейтингом прав и detach),
 // применение удалённых команд, снапшоты (SNAPSHOT_REQ / STATE.to), дрейф (BEAT),
 // релей буфера/рекламы, гашение эха. Roster-based, адаптивный контроль (Фаза A).
@@ -229,7 +230,7 @@ export function onAd(s: Session, msg: AdMsg, frameId: number): void {
   if (s.detached || s.contentMismatch) return;
   const wire: AdMessage = { type: 'AD', ad: msg.ad, ts: Date.now() };
   sendWire(s, wire);
-  notifyEvent(s, msg.ad ? 'У вас реклама — партнёр ждёт' : 'Ваша реклама закончилась');
+  notifyEvent(s, msg.ad ? tr('У вас реклама — партнёр ждёт') : tr('Ваша реклама закончилась'));
 }
 
 // Не чаще раза в 3с: серия seek/ratechange от одного жеста не должна спамить хоста.
@@ -269,7 +270,7 @@ export function requestGateResync(s: Session): void {
   if (now - s.lastGateResyncAt < GATE_RESYNC_THROTTLE_MS) return;
   s.lastGateResyncAt = now;
   sendWire(s, { type: 'MODE', detached: false });
-  notifyEvent(s, 'Управляет хост — плеер выровнен по комнате. Право можно получить кнопкой «Запросить управление»');
+  notifyEvent(s, tr('Управляет хост — плеер выровнен по комнате. Право можно получить кнопкой «Запросить управление»'));
 }
 
 // ── Удалённые сообщения → плеер ──────────────────────────────────────────────
@@ -311,7 +312,7 @@ export function onRemoteBuffer(s: Session, msg: BufferMessage): void {
 export function onRemoteAd(s: Session, msg: AdMessage): void {
   if (s.detached || s.contentMismatch) return;
   const who = peerName(s, msg.from);
-  notifyEvent(s, msg.ad ? `${who} смотрит рекламу — ждём` : 'Реклама у партнёра закончилась');
+  notifyEvent(s, msg.ad ? tr`${who} смотрит рекламу — ждём` : tr('Реклама у партнёра закончилась'));
   notePeerAd(s, msg.from, msg.ad);
 }
 
@@ -399,10 +400,10 @@ export async function pushSnapshot(s: Session, req: SnapshotReqMessage, attempt 
 function partnerActionText(s: Session, state: StateMessage): string {
   const who = peerName(s, state.from);
   switch (state.action) {
-    case 'play': return `${who} продолжил(а) воспроизведение`;
-    case 'pause': return `${who} поставил(а) на паузу`;
-    case 'seek': return `${who} перемотал(а) на ${fmtTime(state.currentTime)}`;
-    case 'rate': return `${who} изменил(а) скорость ×${state.rate ?? 1}`;
+    case 'play': return tr`${who} продолжил(а) воспроизведение`;
+    case 'pause': return tr`${who} поставил(а) на паузу`;
+    case 'seek': return tr`${who} перемотал(а) на ${fmtTime(state.currentTime)}`;
+    case 'rate': return tr`${who} изменил(а) скорость ×${state.rate ?? 1}`;
   }
 }
 

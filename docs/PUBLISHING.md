@@ -1,25 +1,61 @@
-# Выпуск SyncWatch в Chrome Web Store
+# Publishing SyncWatch
 
-Разрабатываемая сборка расширения — **0.8.0**, сервер — **0.4.0**. Рабочая база: `origin/main` (`98406df`, код с MacBook). В существующую карточку Chrome Web Store владельцем уже загружена 0.6.0. Создавать новую карточку или повторно оплачивать регистрацию не требуется.
+Current extension: **0.10.0**. Server: **0.4.1**. Existing Chrome Web Store item:
+mincjbhfhimdgnjjonocoogphjgkfffm. Always update this item; registration and extension
+identity are already established. See releases/STATUS.md for confirmed live state.
 
-1. Используйте Node.js 24. Выполните `npm ci` отдельно в `extension/` и `server/`.
-2. `cd extension && npm run package`: типы, тесты, Chrome-сборка и проверка совпадения версий. Для магазинного ZIP задается `SYNCWATCH_SERVER_URL` с адресом проверенного сервера; без него получается сборка для разработки с ручной настройкой. Результат: `extension/dist/packages/syncwatch-chrome-0.8.0.zip`, manifest.json в корне. Для выпуска используйте workflow из `docs/releases/DEPLOYMENT.md`.
-3. `cd server && npm run verify`: типы и серверные тесты. Друзья требуют обновленного сервера 0.4.0: запросы теперь подтверждают владельца и приглашение. Комнатный WebSocket сохраняет базовую совместимость, но для исправленного порядка команд всем участникам нужна новая версия расширения.
-4. Проведите приемку установленного расширения в разрешенном Chrome: два разных профиля, внешние iframe, целевые сайты/адаптеры, fullscreen, реклама, autoplay, сон service worker, потеря сети и комнаты 2/3/10 участников. Автоматические проверки исходных модулей перечислены в FIX-RESULTS.md; это не равнозначно приемке установленного ZIP.
-5. После приемки разверните сервер и загрузите ZIP **как обновление существующей карточки**. Для текущего разрешенного владельцем выпуска подготовлен workflow и отдельный порядок: `docs/releases/DEPLOYMENT.md`. Фактические деплой и отправку подтверждать результатом запуска/статусом магазина.
+## Verification and package
 
-Chrome 120+ обязателен. В manifest включен отдельный небольшой MAIN-world script на document_start: он выбирает контейнер для fullscreen непосредственно в исходном пользовательском действии. Этот файл не использует API расширения и не получает настройки, приватные ключи или сообщения. Основной content-script остается в isolated world. В полноэкранном внешнем iframe интерфейс показывает только активный дочерний документ. Разрешения: storage, alarms и прежний доступ к сайтам; дополнительные разрешения не добавлены.
+Use Node.js 24. Run npm ci separately in extension/ and server/.
 
-Автотест fullscreen: `cd extension && npm run test:browser` после `npx playwright install chromium`. Для системного Chromium задайте `CHROMIUM_PATH=/usr/bin/chromium`. CI запускает его отдельно от unit-тестов и сохраняет результаты/скриншоты.
+- extension/: npm run verify, npm run build, npx playwright install chromium,
+  then npm run test:browser.
+- server/: npm run verify.
+- Verify /healthz, /privacy?lang=en, /privacy?lang=ru and an isolated WebSocket JOIN.
+- Set SYNCWATCH_SERVER_URL to the verified production origin before the release
+  build. Existing user relay preferences must survive updates.
+- npm run package in extension/ verifies versions and produces
+  dist/packages/syncwatch-chrome-0.10.0.zip and SHA256SUMS. manifest.json must be
+  at archive root; _locales/en and _locales/ru must be included.
 
-`PUBLISHED_EXTENSION_VERSION` в server/src/index.ts оставлен **0.6.0**, согласно информации владельца о загруженной версии. Повысьте его до 0.8.0 только после доступности новой версии в магазине. `/version` — подсказка интерфейса; установку обновлений выполняет Chrome Web Store. Ссылка в панели ведет на карточку текущего extension ID. Старый альтернативный канал `/updates.json` возвращает 404.
+The normal packager uses Info-ZIP with fixed order, permissions and timestamps.
+When it is unavailable on Windows, a deterministic Python ZIP can be used only
+with CRC, file-by-file build comparison and repeat-digest verification recorded.
+It need not be byte-identical to the Linux Info-ZIP output. Publish the exact ZIP
+submitted to the store; do not rebuild silently after review.
 
-Друзья из промежуточной незащищенной реализации потребуют новых ссылок: старый публичный UUID не подтверждал владельца. Локальные настройки и списки не удаляются автоматически; новый приватный ключ создается один раз и не попадает в ссылки. Для новой связи используйте «Добавить друга». Ссылка действует 7 дней; новая ссылка заменяет предыдущую. Оба пользователя должны выбрать один сервер. Чат хранит до 50 сообщений в памяти сессии, без серверного архива; перезапуск worker/выход очищает историю.
+## GitHub release
 
-Проверьте опубликованную `/privacy` и декларации данных в существующей карточке: URL контента, выбор серии/озвучки, код комнаты, имя, сообщения чата и идентификаторы/разрешения присутствия. Политика конкретного сервера должна также описывать его эксплуатационные журналы и ограничения доступа. SHA-256 идентификатора не скрывает граф от владельца сервера, который обрабатывает идентификаторы и списки доступа.
+Commit and push the complete reviewed source. Preserve all existing tags. Create
+a new v0.10.0 tag pointing at the release commit and publish a GitHub release with
+the Chrome ZIP, SHA256SUMS, English notes and current screenshot assets. A GitHub
+release does not mean the Web Store update has been approved or distributed.
 
+The legacy tag-triggered workflow deploys production and needs Cloudflare Actions
+secrets. For a release prepared with authorized local OAuth, use the documented
+manual path in releases/DEPLOYMENT.md; do not set up credentials or redeploy simply
+to make the workflow green. Keep reported deployment/review evidence accurate.
 
-Для нативных `<video controls>` добавлена компактная кнопка ⛶ слева сверху на видео: штатная кнопка Chrome обходит JavaScript-перехват, поэтому она заменена этой кнопкой. Вход и выход выполняются мышью; двойной клик по нативному video также использует контейнер. Чат/колесо открываются кнопкой, закрываются отменой или фоном; текст отправляется кнопкой «Отправить» либо Enter. MAIN-world код этой кнопки не имеет доступа к данным расширения. На собственные кнопки плееров действует общий fullscreen-перехват.
+## Store listing and review
 
+1. If an older update is still under review, withdraw that review before replacing
+   its package. Do not unpublish the installed public version.
+2. Upload the verified 0.10.0 ZIP as a new package for the same item.
+3. Set English as the primary listing language, keep a Russian translation, and
+   use the English description from releases/STORE-SUBMISSION.md.
+4. Replace outdated screenshots with the five current 1280 × 800 English screenshots.
+   Images show actual UI with clearly marked illustrative data. Chrome accepts
+   24-bit PNG or JPEG; validate dimensions/color mode before upload.
+5. Keep permission/data disclosures aligned with the implementation. Language
+   selection adds no permissions, tracking, translation service or data category.
+   The privacy URL serves English and Russian versions.
+6. Update reviewer instructions, save the draft and submit. For 0.10.0, the owner
+   requested **automatic publication after approval**: enable that submission option.
+7. Record the actual confirmed version/review state. Pending review is not approved
+   or available. Installed-extension acceptance on live video sites remains distinct
+   from the automated source-module fixtures.
 
-Автоматическая подготовка: тег `v0.8.0` запускает **Release SyncWatch**. После тестов выполняются деплой и проверка `/healthz`, `/privacy` и WebSocket. Проверенный адрес встраивается в ZIP как сервер по умолчанию; затем создается draft release. Нужны Actions secrets `CLOUDFLARE_API_TOKEN` и `CLOUDFLARE_ACCOUNT_ID`. ZIP и SHA256SUMS появятся в черновике только после успешного деплоя. Материалы модерации — `docs/releases/STORE-SUBMISSION.md`.
+The server's /version currently has a historical 0.6.0 value; update it in a tested
+follow-up only after confirming the current version is actually available in the
+Web Store. Chrome itself distributes extension updates. The removed /updates.json
+channel returns 404.

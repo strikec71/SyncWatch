@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Ядро состояния хаба: РЕЕСТР сессий по вкладкам, константы и чистые селекторы.
 // Синхрон — принадлежность ВКЛАДКИ: каждая видео-вкладка держит свою `Session` (свой WS,
 // комнату, roster, активный фрейм). Реестр `sessions: Map<tabId, Session>` заменил бывший
@@ -279,8 +280,8 @@ export function livePeers(s: Session): RosterPeer[] {
 
 /** Имя участника по connId (или дефолт). */
 export function peerName(s: Session, id: number | undefined): string {
-  if (id == null) return 'Партнёр';
-  return s.roster.get(id)?.name || 'Партнёр';
+  if (id == null) return tr('Партнёр');
+  return s.roster.get(id)?.name || tr('Партнёр');
 }
 
 /** Низкоуровневая отправка в WS сессии. Гейтит ws/connected, гасит исключения.

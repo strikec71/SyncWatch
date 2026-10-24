@@ -1,12 +1,21 @@
-# План проверки и исправлений актуальной версии
+# Verification plan
 
-База — код с MacBook, `origin/main` / `98406df`. Старый аудит `b603e0c` сохранен как история; после обновления выполнена повторная проверка. Chrome 120+, локальная версия расширения 0.8.0, сервер 0.4.0.
+Current extension: 0.10.0. Server: 0.4.1. The original 0.8.0 remediation plan is
+preserved in archive/ru/FIX-PLAN-0.8.0.md. This document is the current checklist.
 
-| Часть | Разработка | Проверка |
+| Area | Required behavior | Verification |
 |---|---|---|
-| 1. Плеер, порядок команд и сессии | Разделить ручную паузу и технические ожидания; агрегировать буфер/рекламу; ревизии и ACK; защита источников и навигации; настройки и storage.session; единый reconnect | Регрессии контроллера/Room, два и три клиента с настоящими video и локальным Worker, разрывы/устаревшие события |
-| 2. Чат и fullscreen | Единый top layer; вход в fullscreen в исходном жесте; UI в активном iframe; колесо и пузырьки; текст до 200 символов; ошибки/черновики, антиспам и безопасная автопауза | Настоящий Chromium: клики/Enter, контейнер/video/чужой iframe, фокус, HTML как текст; чат через Worker |
-| 3. Друзья и приватность | Проверка владельца, отдельный токен приглашения; первый друг; доставка content-скриптам; очереди записей, подтверждения, отзыв видимости; TTL с DO alarm; честная privacy | Два независимых background-модуля с живым Worker; подмена ID, испорченная/просроченная ссылка, отзыв и удаление; HTTP lifecycle тесты |
-| 4. Выпуск Chrome | Удалить второй manifest/упаковку/канал обновлений; ZIP 0.8.0 для существующей карточки; обновить зависимости, CI и инструкции | Типы, unit-тесты, npm audit, браузерный CI, Chrome ZIP и runtime локального Worker |
+| Playback/session ordering | Desired pause separate from holds; aggregate ads/buffers; revisions/ACKs; per-tab state; one reconnect owner | Controller/Room regressions; real video/Worker fixtures; stale socket and cross-command cases |
+| Chat/fullscreen | Single active presentation frame; gesture-time fullscreen; text-safe names/chat; drafts/errors/cooldown | Chromium pointer/keyboard checks across container, video, native control and iframe |
+| Friends/privacy | Signed ownership; separate invitation token; serialized writes/acks; revocation and expiry | Independent background/Worker fixtures, forged/expired requests, lifecycle tests |
+| Language/appearance | English/Russian/system; in-place selection; unchanged user content; persisted preferences | Unit catalog/placeholder/plural/settings checks and Chromium switching/remount tests |
+| Packaging/store | Matching versions/locales, verified default relay, deterministic archive, current screenshots | ZIP CRC/file comparison/digest, server health/JOIN, package/listing confirmation |
 
-Исправления проверяются по мере работы; независимые проверки расширения и сервера запускаются одновременно. Итоговые результаты и ограничения — в FIX-RESULTS.md. Деплой и публикация в план не входят. В этом окружении политика администратора запрещает установку unpacked-расширения: браузерные фикстуры используют настоящий код с заменой только extension transport.
+Run extension and server verification, then both browser suites. Fixture results
+must remain separate from installed-extension acceptance in two actual Chrome
+profiles on current target sites, with real ads, autoplay, suspension and sleep.
+A previous full Chromium launch failed with spawn UNKNOWN on this Windows host;
+this does not prove an administrator policy or a product defect.
+
+Record deployment, GitHub release, store review and public availability independently.
+Do not infer any of them from package creation or an upload alone.

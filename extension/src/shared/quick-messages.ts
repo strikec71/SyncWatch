@@ -1,3 +1,4 @@
+import { tr } from './i18n';
 // Каталог быстрых сообщений (chatwheel) — единый источник истины (Фаза 0.7.0).
 // По сети едет только `code`; получатель рендерит локализованный текст+эмодзи отсюда
 // (неизвестный код молча игнорируется — forward-compat для новых фраз в новых версиях).
@@ -13,14 +14,14 @@ export interface QuickMessage {
 
 /** Порядок задаёт раскладку секторов колеса (8 штук, по кругу). */
 export const QUICK_MESSAGES: readonly QuickMessage[] = [
-  { code: 'brb-sec', emoji: '⏸️', text: 'Секундочку!', autoPause: true },
-  { code: 'brb-away', emoji: '🚪', text: 'Надо отойти — скоро вернусь', autoPause: true },
-  { code: 'brb-5min', emoji: '☕', text: 'Перерыв 5 минут', autoPause: true },
-  { code: 'back', emoji: '▶️', text: 'На месте, можно продолжать', autoPause: false },
-  { code: 'lag', emoji: '🐢', text: 'У меня подвисает — подождите', autoPause: false },
-  { code: 'rewind', emoji: '↩️', text: 'Давайте отмотаем чуть назад', autoPause: false },
-  { code: 'like', emoji: '👍', text: 'Класс!', autoPause: false },
-  { code: 'lol', emoji: '😂', text: 'Ха-ха!', autoPause: false },
+  { code: 'brb-sec', emoji: '⏸️', get text() { return tr('Секундочку!'); }, autoPause: true },
+  { code: 'brb-away', emoji: '🚪', get text() { return tr('Надо отойти — скоро вернусь'); }, autoPause: true },
+  { code: 'brb-5min', emoji: '☕', get text() { return tr('Перерыв 5 минут'); }, autoPause: true },
+  { code: 'back', emoji: '▶️', get text() { return tr('На месте, можно продолжать'); }, autoPause: false },
+  { code: 'lag', emoji: '🐢', get text() { return tr('У меня подвисает — подождите'); }, autoPause: false },
+  { code: 'rewind', emoji: '↩️', get text() { return tr('Давайте отмотаем чуть назад'); }, autoPause: false },
+  { code: 'like', emoji: '👍', get text() { return tr('Класс!'); }, autoPause: false },
+  { code: 'lol', emoji: '😂', get text() { return tr('Ха-ха!'); }, autoPause: false },
 ];
 
 const BY_CODE: ReadonlyMap<string, QuickMessage> = new Map(

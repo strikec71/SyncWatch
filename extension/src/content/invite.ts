@@ -1,3 +1,5 @@
+import { tr } from '../shared/i18n';
+import { getLanguage, onLanguageChange } from '../shared/i18n';
 import browser from '../shared/browser';
 import { showFloatingLayer, removeFloatingLayer } from './floating-layer';
 import { loadSettings } from '../shared/settings';
@@ -28,21 +30,27 @@ export function handleInvite(): void {
     const box = document.createElement('section');
     box.style.cssText = 'font:14px system-ui;background:#162032;color:white;padding:20px;border-radius:12px;max-width:380px;overflow-wrap:anywhere';
     const text = document.createElement('p');
-    text.textContent = `Войти в комнату ${invite.room} через ${serverUrl || 'неуказанный сервер'}? Участники смогут управлять видео и менять серию в этой вкладке.`;
-    const join = document.createElement('button'); join.textContent = 'Войти в комнату';
-    const dismiss = document.createElement('button'); dismiss.textContent = 'Отмена';
-    const close = () => { removeFloatingLayer(host); host.remove(); };
+    const join = document.createElement('button');
+    const dismiss = document.createElement('button');
+    let failed = false;
+    const render = () => {
+      host.lang = getLanguage();
+      if (!failed) text.textContent = tr`Войти в комнату ${invite.room} через ${serverUrl || tr('неуказанный сервер')}? Участники смогут управлять видео и менять серию в этой вкладке.`;
+      join.textContent = tr('Войти в комнату'); dismiss.textContent = tr('Отмена');
+    };
+    render(); const stopLanguage = onLanguageChange(render);
+    const close = () => { stopLanguage(); removeFloatingLayer(host); host.remove(); };
     dismiss.onclick = close;
     join.onclick = async () => {
       join.disabled = true;
       try {
         const result = await browser.runtime.sendMessage({ kind: 'connect', room: invite.room, serverUrl }) as { ok?: boolean; error?: string };
-        if (!result?.ok) throw new Error(result?.error || 'Не удалось подключиться');
+        if (!result?.ok) throw new Error(result?.error || tr('Не удалось подключиться'));
         history.replaceState(null, '', location.pathname + location.search);
         // Keep controls available even on a join page with no video.
         await browser.runtime.sendMessage({ kind: 'open-overlay' });
         close();
-      } catch (e) { text.textContent = String(e); join.disabled = false; }
+      } catch (e) { failed = true; text.textContent = String(e); join.disabled = false; }
     };
     box.append(text, join, dismiss); shadow.append(box); document.documentElement.append(host); showFloatingLayer(host, 30, shadow);
   }).catch(() => {});

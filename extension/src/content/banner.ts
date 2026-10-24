@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n';
 // Центральный статус-баннер (Фаза 7) — документ показа, выбранный ContentUI.
 // Дышащая плашка по центру, отражающая текущее блокирующее состояние от партнёра
 // (пауза / буфер / реклама со счётом вверх). Состояние считает background и пушит
@@ -6,23 +7,27 @@
 
 import { showFloatingLayer, hideFloatingLayer, removeFloatingLayer } from './floating-layer';
 import type { BannerMsg } from '../shared/messages';
+import { DEFAULT_APPEARANCE, type Appearance } from '../shared/appearance';
+import { applyAppearance, SURFACE_CSS } from './appearance';
 
 type BannerState = BannerMsg['state'];
 
 export class StatusBanner {
+  private prefs: Appearance = DEFAULT_APPEARANCE;
+  setAppearance(prefs: Appearance): void { this.prefs = prefs; if (this.host) applyAppearance(this.host, prefs); }
   private host: HTMLDivElement | null = null;
   private pill: HTMLElement | null = null;
   private textEl: HTMLElement | null = null;
   private state: BannerState = 'none';
   private since = 0;
-  private name = 'Партнёр';
+  private name = tr('Партнёр');
   private tick: number | null = null;
 
   /** Применить состояние от хаба. */
   apply(msg: BannerMsg): void {
     this.state = msg.state;
     this.since = msg.since;
-    this.name = msg.name || 'Партнёр';
+    this.name = msg.name || tr('Партнёр');
 
     if (msg.state === 'none') { this.hide(); return; }
 
@@ -39,14 +44,14 @@ export class StatusBanner {
     const who = this.name;
     switch (this.state) {
       case 'peer-paused':
-        this.textEl.textContent = `${who} на паузе`;
+        this.textEl.textContent = tr`${who} на паузе`;
         break;
       case 'peer-buffer':
-        this.textEl.textContent = `${who} догружает видео…`;
+        this.textEl.textContent = tr`${who} догружает видео…`;
         break;
       case 'peer-ad': {
         const sec = Math.max(0, Math.floor((Date.now() - this.since) / 1000));
-        this.textEl.textContent = `Реклама у партнёра · ${fmt(sec)}`;
+        this.textEl.textContent = tr`Реклама у партнёра · ${fmt(sec)}`;
         break;
       }
     }
@@ -64,6 +69,8 @@ export class StatusBanner {
   private ensureHost(): void {
     if (this.host) { this.host.style.display = ''; this.showInTopLayer(); return; }
     const host = document.createElement('div');
+    applyAppearance(host, this.prefs);
+    host.setAttribute('role', 'status');
     host.setAttribute('popover', 'manual');
     // ВАЖНО: inset:auto идёт ДО left/top — иначе шорткат inset затирает офсеты (уезжает в угол).
     host.style.cssText =
@@ -103,19 +110,19 @@ function fmt(sec: number): string {
 }
 
 const BANNER_TEMPLATE = `
-<style>
+<style>${SURFACE_CSS}
   :host { all: initial; }
   .pill {
     --holo: linear-gradient(90deg,#7cf5ff,#a9a0ff,#ff9be1,#7cf5ff);
     position: relative; display: inline-flex; align-items: center; gap: 10px; overflow: hidden;
-    font-family: ui-monospace,'SF Mono',Menlo,Consolas,system-ui,sans-serif;
-    font-size: 13px; font-weight: 600; letter-spacing: .3px; color: #eef1f8; white-space: nowrap;
+    font-family:var(--sans);
+    font-size:13px;font-weight:500;color:var(--ink);white-space:normal;max-width:min(480px,85vw);overflow-wrap:anywhere;
     padding: 10px 20px 11px; border-radius: 999px;
-    background: rgba(14,16,22,.68);
+    background:linear-gradient(125deg,var(--accent-soft),transparent),rgba(var(--surface-rgb),var(--surface-opacity));
     -webkit-backdrop-filter: blur(12px) saturate(1.3); backdrop-filter: blur(12px) saturate(1.3);
-    border: 1px solid rgba(255,255,255,.10);
-    box-shadow: 0 10px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
-    animation: breathe 4s ease-in-out infinite;
+    border:1px solid var(--line);
+    box-shadow:0 10px 34px var(--shadow),inset 0 1px 0 rgba(255,255,255,.06);
+    animation:appear var(--motion) ease-out both;
   }
   /* Точка-индикатор состояния партнёра */
   .sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #a9a0ff; box-shadow: 0 0 10px rgba(169,160,255,.7); }
@@ -125,11 +132,11 @@ const BANNER_TEMPLATE = `
   /* Сдвигающаяся голо-линия под текстом */
   .pill::after {
     content: ''; position: absolute; left: 16px; right: 16px; bottom: 5px; height: 1.5px; border-radius: 2px;
-    background: var(--holo); background-size: 200% 100%; opacity: .85;
-    animation: slide 2.6s linear infinite; filter: drop-shadow(0 0 3px rgba(124,245,255,.4));
+    background:var(--gradient);opacity:.65;
   }
   @keyframes slide { to { background-position: -200% 0; } }
   @keyframes breathe { 0%, 100% { transform: scale(1); opacity: .9; } 50% { transform: scale(1.02); opacity: 1; } }
+  @keyframes appear {from{opacity:0;transform:translateY(-5px) scale(.97);}to{opacity:1;transform:none;}}
   @keyframes blink { 50% { opacity: .3; } }
   @media (prefers-reduced-motion: reduce) {
     .pill, .pill::after, .sdot { animation: none !important; }
